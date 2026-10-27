@@ -132,6 +132,7 @@ private:
     void updateFailedList();
     void updateActiveList();
     void destroyEntry(DownloadEntry *entry);
+    void ensureRuntime();
 
     static constexpr int kMaxLogChars = 48 * 1024;
     static constexpr int kLogEmitIntervalMs = 250;

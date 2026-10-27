@@ -9,6 +9,8 @@
 #include <QSet>
 #include <QStandardPaths>
 
+#include <dlfcn.h>
+
 namespace YtdlpFormats {
 
 static QStringList searchDirs()
@@ -66,8 +68,27 @@ QString localYtdlpPath()
     return runtimeBinDir() + QStringLiteral("/yt-dlp");
 }
 
+static QString packagedUpdateScript()
+{
+    Dl_info info{};
+    if (dladdr(reinterpret_cast<void *>(&packagedUpdateScript), &info) == 0 || !info.dli_fname) {
+        return {};
+    }
+    QDir dir(QFileInfo(QString::fromLocal8Bit(info.dli_fname)).absolutePath());
+    // libytdlpplugin.so -> .../contents/qml/com/zrn59/ytdlp
+    if (!dir.cdUp() || !dir.cdUp() || !dir.cdUp()) {
+        return {};
+    }
+    const QString script = dir.filePath(QStringLiteral("scripts/yt-dlp-update.sh"));
+    return QFileInfo(script).isExecutable() ? script : QString();
+}
+
 QString updateScriptPath()
 {
+    const QString packaged = packagedUpdateScript();
+    if (!packaged.isEmpty()) {
+        return packaged;
+    }
     const QString userScript = runtimeBinDir() + QStringLiteral("/yt-dlp-update.sh");
     if (QFileInfo(userScript).isExecutable()) {
         return userScript;

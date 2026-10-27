@@ -21,6 +21,10 @@
 
 Plasma 6.0 or newer. Plasma 5 is not supported.
 
+Store page: https://store.kde.org/p/2380466/
+
+Discover can show the project, but the C++ plugin still has to be built with `./install.sh`. After that, the widget downloads yt-dlp by itself the first time it opens and turns on a daily update. No root password.
+
 ## Install
 
 ```bash

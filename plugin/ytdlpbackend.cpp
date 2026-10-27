@@ -114,6 +114,7 @@ YtdlpBackend::YtdlpBackend(QObject *parent)
     , m_ffmpegPath(findFfmpeg())
 {
     refreshYtdlpVersion();
+    QTimer::singleShot(0, this, &YtdlpBackend::ensureRuntime);
 }
 
 YtdlpBackend::~YtdlpBackend()
@@ -359,6 +360,80 @@ void YtdlpBackend::refreshYtdlpVersion()
         process->deleteLater();
     });
     process->start();
+}
+
+void YtdlpBackend::ensureRuntime()
+{
+    const QString script = YtdlpFormats::updateScriptPath();
+    if (script.isEmpty()) {
+        return;
+    }
+
+    const QString unitDir = QStandardPaths::writableLocation(QStandardPaths::ConfigLocation)
+        + QStringLiteral("/systemd/user");
+    QDir().mkpath(unitDir);
+    const QString servicePath = unitDir + QStringLiteral("/com.zrn59.ytdlp-update.service");
+    const QString timerPath = unitDir + QStringLiteral("/com.zrn59.ytdlp-update.timer");
+    const QString service = QStringLiteral(
+                                "[Unit]\n"
+                                "Description=Update the yt-dlp binary used by the com.zrn59.ytdlp Plasma widget\n"
+                                "\n"
+                                "[Service]\n"
+                                "Type=oneshot\n"
+                                "ExecStart=%1\n"
+                                "Nice=10\n")
+                                .arg(script);
+    const QByteArray timer = QByteArrayLiteral(
+        "[Unit]\n"
+        "Description=Daily update of the yt-dlp binary used by com.zrn59.ytdlp\n"
+        "\n"
+        "[Timer]\n"
+        "OnBootSec=5min\n"
+        "OnUnitActiveSec=1d\n"
+        "RandomizedDelaySec=30min\n"
+        "Persistent=true\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n");
+
+    bool changed = false;
+    QFile currentService(servicePath);
+    QString existingService;
+    if (currentService.open(QIODevice::ReadOnly)) {
+        existingService = QString::fromUtf8(currentService.readAll());
+    }
+    if (existingService != service) {
+        QFile out(servicePath);
+        if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            out.write(service.toUtf8());
+            changed = true;
+        }
+    }
+    if (!QFileInfo::exists(timerPath)) {
+        QFile out(timerPath);
+        if (out.open(QIODevice::WriteOnly)) {
+            out.write(timer);
+            changed = true;
+        }
+    }
+    if (changed) {
+        auto *reload = new QProcess(this);
+        reload->setProgram(QStringLiteral("systemctl"));
+        reload->setArguments({QStringLiteral("--user"), QStringLiteral("daemon-reload")});
+        connect(reload, &QProcess::finished, this, [reload](int, QProcess::ExitStatus) {
+            QProcess::startDetached(QStringLiteral("systemctl"),
+                                    {QStringLiteral("--user"),
+                                     QStringLiteral("enable"),
+                                     QStringLiteral("--now"),
+                                     QStringLiteral("com.zrn59.ytdlp-update.timer")});
+            reload->deleteLater();
+        });
+        reload->start();
+    }
+
+    if (m_ytdlpPath.isEmpty()) {
+        updateYtdlp();
+    }
 }
 
 void YtdlpBackend::updateYtdlp()

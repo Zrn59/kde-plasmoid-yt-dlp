@@ -23,11 +23,13 @@ install(FILES package/notifyrc/com.zrn59.ytdlp.notifyrc
         DESTINATION "${CMAKE_INSTALL_DATADIR}/knotifications6")
 install(PROGRAMS scripts/yt-dlp-update.sh
         DESTINATION "${CMAKE_INSTALL_DATADIR}/com.zrn59.ytdlp/bin")
+install(PROGRAMS scripts/yt-dlp-update.sh
+        DESTINATION "${PLASMOID_INSTALL_DIR}/contents/scripts")
 
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Core)
     add_executable(ytdlp-format-test tests/format_test.cpp plugin/ytdlpformats.cpp)
-    target_link_libraries(ytdlp-format-test PRIVATE Qt6::Core)
+    target_link_libraries(ytdlp-format-test PRIVATE Qt6::Core ${CMAKE_DL_LIBS})
     target_include_directories(ytdlp-format-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/plugin")
     add_test(NAME formats COMMAND ytdlp-format-test)
 endif()

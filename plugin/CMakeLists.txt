@@ -23,6 +23,7 @@ target_link_libraries(ytdlpplugin
         Qt6::Widgets
         KF6::I18n
         KF6::Notifications
+        ${CMAKE_DL_LIBS}
 )
 
 target_compile_options(ytdlpplugin PRIVATE -Wall -Wextra)
