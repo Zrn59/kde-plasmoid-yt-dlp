@@ -15,6 +15,10 @@
 
 ---
 
+<p align="center">
+  <img src="../screenshot.png" alt="yt-dlp widget" width="420">
+</p>
+
 Plasma 6.0 or newer. Plasma 5 is not supported.
 
 ## Install

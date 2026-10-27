@@ -15,6 +15,10 @@
 
 ---
 
+<p align="center">
+  <img src="docs/screenshot.png" alt="Виджет yt-dlp" width="420">
+</p>
+
 Виджет панели для KDE Plasma 6. Качает видео и аудио своей копией [yt-dlp](https://github.com/yt-dlp/yt-dlp).
 
 ```bash

@@ -15,6 +15,10 @@
 
 ---
 
+<p align="center">
+  <img src="screenshot.png" alt="Виджет yt-dlp" width="420">
+</p>
+
 Нужна Plasma 6.0 или новее. Plasma 5 не поддерживается.
 
 ## Установка

@@ -15,6 +15,10 @@
 
 ---
 
+<p align="center">
+  <img src="docs/screenshot.png" alt="yt-dlp widget" width="420">
+</p>
+
 Panel widget for KDE Plasma 6. Downloads video and audio with its own [yt-dlp](https://github.com/yt-dlp/yt-dlp).
 
 ```bash
