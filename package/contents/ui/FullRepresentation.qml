@@ -236,12 +236,10 @@ PlasmaComponents.Page {
                         font: Kirigami.Theme.smallFont
                         text: {
                             if (backend.updatingYtdlp)
-                                return i18n("Updating…")
+                                return i18n("yt-dlp version: updating…")
                             if (backend.ytdlpVersion.length === 0)
-                                return i18n("Checking…")
-                            if (backend.ytdlpPath.length === 0)
-                                return backend.ytdlpVersion
-                            return i18n("v%1", backend.ytdlpVersion)
+                                return i18n("yt-dlp version: checking…")
+                            return i18n("yt-dlp version: %1", backend.ytdlpVersion)
                         }
                         PlasmaComponents.ToolTip.text: backend.ytdlpPath.length > 0
                             ? backend.ytdlpPath
