@@ -1,4 +1,4 @@
-# yt-dlp Plasma widget
+# kde-plasmoid-yt-dlp
 
 <div align="center">
 

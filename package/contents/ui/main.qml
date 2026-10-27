@@ -25,7 +25,7 @@ PlasmoidItem {
 
     readonly property url plasmoidIcon: Qt.resolvedUrl("yt-dlp.svg")
 
-    toolTipMainText: i18n("yt-dlp")
+    toolTipMainText: i18n("kde-plasmoid-yt-dlp")
     toolTipSubText: hasActiveDownloads
         ? i18ncp("@info:tooltip", "1 active download", "%1 active downloads", backend.activeCount)
         : i18nc("@info:tooltip", "Download video and audio")

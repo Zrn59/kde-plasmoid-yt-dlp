@@ -1,4 +1,4 @@
-# Виджет yt-dlp для Plasma
+# kde-plasmoid-yt-dlp
 
 <div align="center">
 

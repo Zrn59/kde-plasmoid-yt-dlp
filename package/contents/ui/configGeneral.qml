@@ -58,7 +58,7 @@ KCM.SimpleKCM {
 
     Kirigami.FormLayout {
         Kirigami.Heading {
-            Kirigami.FormData.label: i18n("yt-dlp")
+            Kirigami.FormData.label: i18n("kde-plasmoid-yt-dlp")
             text: i18n("Settings are in the widget popup.")
         }
     }

@@ -227,7 +227,7 @@ PlasmaComponents.Page {
                     spacing: 0
 
                     PlasmaComponents.Label {
-                        text: i18n("yt-dlp")
+                        text: i18n("kde-plasmoid-yt-dlp")
                         font.bold: true
                     }
 

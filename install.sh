@@ -357,7 +357,7 @@ echo "  Widget:  ${DATA_HOME}/plasma/plasmoids/${PLASMOID_ID}"
 echo "  yt-dlp:  ${RUNTIME_BIN}/yt-dlp"
 echo "  Updates: systemctl --user list-timers ${UNIT_NAME}.timer"
 echo
-echo "Add it from the panel: Add Widgets → yt-dlp"
+echo "Add it from the panel: Add Widgets → kde-plasmoid-yt-dlp"
 if [[ "$SKIP_RESTART" == 1 ]]; then
     echo "Plasma was not reloaded. Log out once if the widget was already on the panel."
 fi

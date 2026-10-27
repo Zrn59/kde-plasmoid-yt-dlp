@@ -1,4 +1,4 @@
-# yt-dlp Plasma widget
+# kde-plasmoid-yt-dlp
 
 <div align="center">
 
@@ -34,7 +34,7 @@ cd kde-plasmoid-yt-dlp
 ./install.sh
 ```
 
-Then right-click the panel → **Add Widgets** → **yt-dlp**.
+Then right-click the panel → **Add Widgets** → **kde-plasmoid-yt-dlp**.
 
 `./install.sh` builds the widget for the Qt and Plasma installed on this machine and reloads Plasma once. The first time the widget opens, it downloads yt-dlp if it is not there yet and enables the daily update timer. No root password.
 
