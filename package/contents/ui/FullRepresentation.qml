@@ -194,7 +194,10 @@ PlasmaComponents.Page {
 
     PlasmaComponents.ScrollView {
         id: scroll
-        anchors.fill: parent
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.bottom: footerLine.top
         focus: true
         contentWidth: availableWidth
         clip: true
@@ -790,47 +793,43 @@ PlasmaComponents.Page {
                 }
             }
 
-            Kirigami.Separator {
-                Layout.fillWidth: true
-                Layout.topMargin: Kirigami.Units.smallSpacing
-            }
+            Item { Layout.preferredHeight: Kirigami.Units.smallSpacing }
+        }
+    }
 
-            ColumnLayout {
-                Layout.fillWidth: true
-                Layout.leftMargin: Kirigami.Units.gridUnit
-                Layout.rightMargin: Kirigami.Units.gridUnit
-                Layout.bottomMargin: Kirigami.Units.smallSpacing
-                spacing: Kirigami.Units.smallSpacing
+    Kirigami.Separator {
+        id: footerLine
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: footer.top
+        anchors.bottomMargin: Kirigami.Units.smallSpacing
+    }
 
-                PlasmaComponents.Label {
-                    Layout.fillWidth: true
-                    wrapMode: Text.WordWrap
-                    font: Kirigami.Theme.smallFont
-                    opacity: 0.7
-                    text: i18n("Custom bot and web development, Docker hosting")
-                }
+    RowLayout {
+        id: footer
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.leftMargin: Kirigami.Units.smallSpacing
+        anchors.rightMargin: Kirigami.Units.smallSpacing
+        anchors.bottomMargin: Kirigami.Units.smallSpacing
+        anchors.topMargin: Kirigami.Units.smallSpacing
+        spacing: Kirigami.Units.smallSpacing
 
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Kirigami.Units.smallSpacing
+        PlasmaComponents.ToolButton {
+            icon.name: "globe-symbolic"
+            text: i18n("zrn59.me")
+            flat: true
+            onClicked: Qt.openUrlExternally("https://zrn59.me")
+        }
 
-                    PlasmaComponents.ToolButton {
-                        Layout.fillWidth: true
-                        icon.name: "globe-symbolic"
-                        text: i18n("zrn59.me")
-                        onClicked: Qt.openUrlExternally("https://zrn59.me")
-                        PlasmaComponents.ToolTip.text: i18n("Custom Bot & Web Development / Docker Hosting")
-                    }
+        Item { Layout.fillWidth: true }
 
-                    PlasmaComponents.ToolButton {
-                        Layout.fillWidth: true
-                        icon.name: "favorite-symbolic"
-                        text: i18n("☕ Support / Donate")
-                        onClicked: Qt.openUrlExternally("https://www.donationalerts.com/r/zrn59")
-                        PlasmaComponents.ToolTip.text: i18n("Support this widget")
-                    }
-                }
-            }
+        PlasmaComponents.ToolButton {
+            icon.name: "favorite-symbolic"
+            text: i18n("☕ Support / Donate")
+            flat: true
+            onClicked: Qt.openUrlExternally("https://www.donationalerts.com/r/zrn59")
         }
     }
 }
