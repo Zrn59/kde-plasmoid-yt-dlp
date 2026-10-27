@@ -17,10 +17,13 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          apt-get update
           apt-get install -y --no-install-recommends \
-            cmake g++ extra-cmake-modules pkg-config \
+            build-essential cmake pkg-config \
             qt6-base-dev qt6-declarative-dev \
-            libkf6i18n-dev libkf6notifications-dev
+            extra-cmake-modules \
+            libkf6i18n-dev libkf6notifications-dev \
+            bash
 
       - name: Configure, build, and test
         run: |
