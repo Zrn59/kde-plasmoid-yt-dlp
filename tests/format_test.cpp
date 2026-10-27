@@ -62,8 +62,9 @@ int main(int argc, char **argv)
     expect(contains(videoArgs, QStringLiteral("--ignore-config")), "global yt-dlp config is ignored");
     expect(contains(videoArgs, QStringLiteral("--no-playlist")), "playlists are off by default");
     expect(!joined(videoArgs).contains(QStringLiteral("--exec")), "built command has no exec");
-    expect(joined(videoArgs).contains(QStringLiteral("%(title).200B [%(id)s].%(ext)s")),
-           "output name is title and id only");
+    expect(joined(videoArgs).contains(QStringLiteral("%(title).200B.%(ext)s")),
+           "output name is the title only");
+    expect(!joined(videoArgs).contains(QStringLiteral("%(id)s")), "video id is not part of the filename");
     expect(!joined(videoArgs).contains(QStringLiteral("audio:")), "audio: is not used as a path");
     expect(!joined(videoArgs).contains(QStringLiteral("video:")), "video: is not used as a path");
     expect(!joined(videoArgs).contains(QStringLiteral(".audio.")), "final name has no .audio. marker");
