@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:trixie
+    steps:
+      - name: Install git
+        run: apt-get update && apt-get install -y --no-install-recommends git ca-certificates
+
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          apt-get install -y --no-install-recommends \
+            cmake g++ extra-cmake-modules pkg-config \
+            qt6-base-dev qt6-declarative-dev \
+            libkf6i18n-dev libkf6notifications-dev
+
+      - name: Configure, build, and test
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+
+      - name: Check shell scripts
+        run: |
+          bash -n install.sh
+          bash -n uninstall.sh
+          bash -n scripts/yt-dlp-update.sh
