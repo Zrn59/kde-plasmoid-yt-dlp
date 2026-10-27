@@ -457,15 +457,11 @@ QStringList buildArgs(const DownloadOptions &options, const QString &ffmpegPath)
         }
     }
 
+    // One absolute template. "audio:" / "video:" are not -o types, so yt-dlp
+    // would save them as a folder named "audio:" inside the download directory.
     const QString baseName = QStringLiteral("%(title).200B [%(id)s]");
-    const QString clean = QDir(options.outputDir).filePath(baseName + QStringLiteral(".%(ext)s"));
-    args << QStringLiteral("-o") << clean;
-    if (options.mode == DownloadMode::VideoWithAudio) {
-        const QString video = QDir(options.outputDir).filePath(baseName + QStringLiteral(".video.%(ext)s"));
-        const QString audio = QDir(options.outputDir).filePath(baseName + QStringLiteral(".audio.%(ext)s"));
-        args << QStringLiteral("-o") << QStringLiteral("video:") + video;
-        args << QStringLiteral("-o") << QStringLiteral("audio:") + audio;
-    }
+    args << QStringLiteral("-o")
+         << QDir(options.outputDir).filePath(baseName + QStringLiteral(".%(ext)s"));
 
     if (!options.resumePartial) {
         args << QStringLiteral("--no-overwrites");

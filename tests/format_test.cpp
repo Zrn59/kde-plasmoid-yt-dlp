@@ -62,8 +62,12 @@ int main(int argc, char **argv)
     expect(contains(videoArgs, QStringLiteral("--ignore-config")), "global yt-dlp config is ignored");
     expect(contains(videoArgs, QStringLiteral("--no-playlist")), "playlists are off by default");
     expect(!joined(videoArgs).contains(QStringLiteral("--exec")), "built command has no exec");
-    expect(joined(videoArgs).contains(QStringLiteral(".video.%(ext)s")), "video stream template is marked");
-    expect(joined(videoArgs).contains(QStringLiteral(".audio.%(ext)s")), "audio stream template is marked");
+    expect(joined(videoArgs).contains(QStringLiteral("%(title).200B [%(id)s].%(ext)s")),
+           "output name is title and id only");
+    expect(!joined(videoArgs).contains(QStringLiteral("audio:")), "audio: is not used as a path");
+    expect(!joined(videoArgs).contains(QStringLiteral("video:")), "video: is not used as a path");
+    expect(!joined(videoArgs).contains(QStringLiteral(".audio.")), "final name has no .audio. marker");
+    expect(!joined(videoArgs).contains(QStringLiteral(".video.")), "final name has no .video. marker");
     expect(joined(videoArgs).contains(QStringLiteral("[height<=1080]")), "1080p cap is applied");
     const int formatIndex = videoArgs.indexOf(QStringLiteral("-f"));
     expect(formatIndex >= 0 && formatIndex + 1 < videoArgs.size(), "format flag is present");
