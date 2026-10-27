@@ -1,0 +1,23 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Id": "com.zrn59.ytdlp",
+        "Name": "yt-dlp",
+        "Name[ru]": "yt-dlp",
+        "Description": "Download videos and audio from the web with yt-dlp",
+        "Description[ru]": "Загрузка видео и аудио с помощью yt-dlp",
+        "Icon": "folder-download",
+        "Category": "Utilities",
+        "Version": "2.0.0",
+        "License": "MIT",
+        "Authors": [
+            {
+                "Name": "zrn59"
+            }
+        ],
+        "Website": "https://zrn59.me",
+        "EnabledByDefault": true
+    },
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-MainScript": "ui/main.qml"
+}

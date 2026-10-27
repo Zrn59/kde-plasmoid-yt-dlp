@@ -1,0 +1,12 @@
+[Global]
+IconName=folder-download
+Comment=yt-dlp
+Comment[ru]=yt-dlp
+
+[Event/download]
+Name=Download
+Name[ru]=Загрузка
+Comment=A download started, finished, or failed
+Comment[ru]=Загрузка началась, завершилась или произошла ошибка
+Action=Popup
+Sound=false

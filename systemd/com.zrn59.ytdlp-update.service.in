@@ -1,0 +1,7 @@
+[Unit]
+Description=Update the yt-dlp binary used by the com.zrn59.ytdlp Plasma widget
+
+[Service]
+Type=oneshot
+ExecStart=@YTDLP_UPDATE_BIN@
+Nice=10

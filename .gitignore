@@ -1,0 +1,10 @@
+build/
+*.so
+*.o
+*.qmlc
+*.jsc
+.qmlcache
+CMakeLists.txt.user
+.cache/
+*.user
+compile_commands.json
