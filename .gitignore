@@ -8,3 +8,6 @@ CMakeLists.txt.user
 .cache/
 *.user
 compile_commands.json
+
+# Local distro experiments: package builds, container logs, install notes.
+lab/

@@ -29,6 +29,12 @@ Also on the [KDE Store](https://store.kde.org/p/2380466/).
 Plasma 6, a C++ compiler, CMake, Qt 6 and KDE Frameworks 6 development packages, plus `ffmpeg` and `curl`. The package list for Debian, Fedora, Arch and openSUSE is in the [docs](docs/en/README.md).
 
 ```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Zrn59/kde-plasmoid-yt-dlp/main/install.sh)"
+```
+
+The menu lets you install, update, repair, or uninstall. From a clone, `./install.sh` opens the same menu.
+
+```bash
 git clone https://github.com/Zrn59/kde-plasmoid-yt-dlp.git
 cd kde-plasmoid-yt-dlp
 ./install.sh

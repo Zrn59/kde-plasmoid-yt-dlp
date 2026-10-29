@@ -29,6 +29,12 @@
 Нужны Plasma 6, компилятор C++, CMake, заголовки Qt 6 и KDE Frameworks 6, а ещё `ffmpeg` и `curl`. Список пакетов для Debian, Fedora, Arch и openSUSE есть в [документации](docs/README.md).
 
 ```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Zrn59/kde-plasmoid-yt-dlp/main/install.sh)"
+```
+
+В меню стрелками выбирается установка, обновление, починка или удаление. Из клона то же самое делает `./install.sh`.
+
+```bash
 git clone https://github.com/Zrn59/kde-plasmoid-yt-dlp.git
 cd kde-plasmoid-yt-dlp
 ./install.sh

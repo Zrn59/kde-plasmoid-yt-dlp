@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# User-local install of the yt-dlp Plasma 6 widget.
+# Install, update, repair, or remove the kde-plasmoid-yt-dlp widget.
+# Online:
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/Zrn59/kde-plasmoid-yt-dlp/main/install.sh)"
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_URL="https://github.com/Zrn59/kde-plasmoid-yt-dlp.git"
 PLASMOID_ID="com.zrn59.ytdlp"
-BUILD_DIR="${BUILD_DIR:-$ROOT/build}"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 RUNTIME="${DATA_HOME}/com.zrn59.ytdlp"
@@ -14,68 +15,94 @@ RUNTIME_BIN="${RUNTIME}/bin"
 SYSTEMD_USER="${CONFIG_HOME}/systemd/user"
 UNIT_NAME="com.zrn59.ytdlp-update"
 OLD_QML_DIR="${HOME}/.local/lib/qml"
+CACHE_SRC="${XDG_CACHE_HOME:-$HOME/.cache}/kde-plasmoid-yt-dlp/src"
+
+ROOT=""
+BUILD_DIR=""
 PLASMA_STOPPED=0
-UNINSTALL=0
 SKIP_RESTART=0
 SKIP_RUNTIME=0
+ACTION=""
 
 log() { printf '==> %s\n' "$*"; }
 warn() { printf 'Warning: %s\n' "$*" >&2; }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+need_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 usage() {
     cat <<EOF
-Usage: ./install.sh [--uninstall] [--skip-restart] [--skip-runtime]
+Usage: install.sh [action] [options]
 
-  --uninstall      Remove the widget, its private yt-dlp, and the old QML path hack
+Actions:
+  --install        Build and install
+  --update         Download the latest source, then install
+  --repair         Install again without downloading new source
+  --uninstall      Remove the widget and its private yt-dlp
+
+Options:
   --skip-restart   Do not reload Plasma
   --skip-runtime   Do not download yt-dlp or Deno
+  -h, --help       Show this help
+
+With no action, a terminal shows a menu. Without a terminal, --install is used.
+
+Online:
+  bash -c "\$(curl -fsSL https://raw.githubusercontent.com/Zrn59/kde-plasmoid-yt-dlp/main/install.sh)"
 EOF
 }
 
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --uninstall) UNINSTALL=1 ;;
-        --skip-restart) SKIP_RESTART=1 ;;
-        --skip-runtime) SKIP_RUNTIME=1 ;;
-        -h|--help) usage; exit 0 ;;
-        *) die "Unknown option: $1 (try --help)" ;;
-    esac
-    shift
-done
+script_dir() {
+    if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+        cd "$(dirname "${BASH_SOURCE[0]}")" && pwd
+    fi
+}
 
-need_cmd() { command -v "$1" >/dev/null 2>&1; }
+sources_ready() {
+    [[ -n "$ROOT" && -f "$ROOT/CMakeLists.txt" ]]
+}
+
+download_and_exec() {
+    need_cmd git || die "git is required to download kde-plasmoid-yt-dlp"
+    log "Downloading kde-plasmoid-yt-dlp"
+    if [[ -d "$CACHE_SRC/.git" ]]; then
+        git -C "$CACHE_SRC" pull --ff-only
+    else
+        rm -rf "$CACHE_SRC"
+        git clone --depth 1 "$REPO_URL" "$CACHE_SRC"
+    fi
+    exec "$CACHE_SRC/install.sh" "$@"
+}
 
 print_dep_help() {
     local id like
     id="$(. /etc/os-release && printf '%s' "${ID:-}")"
     like="$(. /etc/os-release && printf '%s' "${ID_LIKE:-}")"
     echo
-    echo "Build dependencies are missing. Install them, then run ./install.sh again."
+    echo "Build dependencies are missing. Install them, then run the installer again."
     echo
     case "${id}:${like}" in
         fedora:*|*:fedora|rhel:*|*:rhel)
             echo "  sudo dnf install cmake gcc-c++ extra-cmake-modules \\"
             echo "    qt6-qtbase-devel qt6-qtdeclarative-devel \\"
             echo "    kf6-ki18n-devel kf6-knotifications-devel kf6-kpackage-devel \\"
-            echo "    ffmpeg curl"
+            echo "    ffmpeg curl git"
             ;;
         arch:*|*:arch)
             echo "  sudo pacman -S --needed cmake gcc extra-cmake-modules \\"
             echo "    qt6-base qt6-declarative ki18n knotifications kpackage \\"
-            echo "    ffmpeg curl"
+            echo "    ffmpeg curl git"
             ;;
         opensuse*|sles*|*:suse*)
             echo "  sudo zypper install cmake gcc-c++ extra-cmake-modules \\"
             echo "    qt6-base-devel qt6-declarative-devel \\"
             echo "    kf6-ki18n-devel kf6-knotifications-devel kf6-kpackage-devel \\"
-            echo "    ffmpeg curl"
+            echo "    ffmpeg curl git"
             ;;
         *)
             echo "  sudo apt install cmake g++ extra-cmake-modules pkg-config \\"
             echo "    qt6-base-dev qt6-declarative-dev \\"
             echo "    libkf6i18n-dev libkf6notifications-dev kpackagetool6 \\"
-            echo "    ffmpeg curl"
+            echo "    ffmpeg curl git"
             ;;
     esac
     echo
@@ -97,7 +124,6 @@ on_exit() {
     start_plasma || true
     exit "$status"
 }
-trap on_exit EXIT
 
 stop_plasma() {
     if [[ "$SKIP_RESTART" == 1 ]]; then
@@ -276,6 +302,85 @@ enable_timer() {
     fi
 }
 
+finish_reload() {
+    if [[ "$PLASMA_STOPPED" == 1 ]]; then
+        start_plasma
+    elif [[ "$SKIP_RESTART" != 1 ]] && systemctl --user is-active --quiet plasma-plasmashell.service; then
+        log "Reloading Plasma"
+        systemctl --user restart plasma-plasmashell.service
+    fi
+}
+
+do_install() {
+    need_cmd cmake || { print_dep_help; die "cmake was not found"; }
+    need_cmd g++ || { print_dep_help; die "g++ was not found"; }
+    need_cmd kpackagetool6 || { print_dep_help; die "kpackagetool6 was not found"; }
+
+    if ! need_cmd ffmpeg; then
+        warn "ffmpeg is not installed. Downloads that merge or convert media will fail until you install it."
+    fi
+
+    log "Building"
+    if ! cmake -S "$ROOT" -B "$BUILD_DIR" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${HOME}/.local"; then
+        print_dep_help
+        die "cmake configuration failed"
+    fi
+    if ! cmake --build "$BUILD_DIR" --parallel "$(nproc 2>/dev/null || echo 2)"; then
+        print_dep_help
+        die "build failed"
+    fi
+    ctest --test-dir "$BUILD_DIR" --output-on-failure
+
+    local stage
+    stage="$(mktemp -d)"
+    cmake --install "$BUILD_DIR" --prefix "$stage" >/dev/null
+
+    remove_old_updater
+    if [[ "$SKIP_RUNTIME" != 1 ]]; then
+        install -D -m 755 "${stage}/share/com.zrn59.ytdlp/bin/yt-dlp-update.sh" \
+            "${RUNTIME_BIN}/yt-dlp-update.sh"
+        if ! "${RUNTIME_BIN}/yt-dlp-update.sh"; then
+            warn "yt-dlp was not downloaded. The widget can download it when you open it."
+        fi
+        install_deno
+    fi
+
+    remove_qml_path_hacks
+    install_package "$stage"
+    rm -rf "$stage"
+    enable_timer
+    finish_reload
+
+    echo
+    echo "Installed."
+    echo "  Widget:  ${DATA_HOME}/plasma/plasmoids/${PLASMOID_ID}"
+    echo "  yt-dlp:  ${RUNTIME_BIN}/yt-dlp"
+    echo "  Updates: systemctl --user list-timers ${UNIT_NAME}.timer"
+    echo
+    echo "Add it from the panel: Add Widgets → kde-plasmoid-yt-dlp"
+    if [[ "$SKIP_RESTART" == 1 ]]; then
+        echo "Plasma was not reloaded. Log out once if the widget was already on the panel."
+    fi
+}
+
+forward_flags() {
+    FORWARD=()
+    [[ "$SKIP_RESTART" == 1 ]] && FORWARD+=(--skip-restart)
+    [[ "$SKIP_RUNTIME" == 1 ]] && FORWARD+=(--skip-runtime)
+}
+
+do_update() {
+    forward_flags
+    if [[ -d "$ROOT/.git" ]]; then
+        log "Updating source"
+        git -C "$ROOT" pull --ff-only
+        exec "$ROOT/install.sh" --install "${FORWARD[@]}"
+    fi
+    download_and_exec --install "${FORWARD[@]}"
+}
+
 do_uninstall() {
     log "Removing ${PLASMOID_ID}"
     if need_cmd kpackagetool6 && kpackagetool6 --type Plasma/Applet --show "$PLASMOID_ID" >/dev/null 2>&1; then
@@ -289,75 +394,77 @@ do_uninstall() {
     remove_qml_path_hacks
     rm -rf "$RUNTIME"
     systemctl --user daemon-reload || true
-    if [[ "$SKIP_RESTART" != 1 ]]; then
-        if systemctl --user is-active --quiet plasma-plasmashell.service; then
-            systemctl --user restart plasma-plasmashell.service || warn "Reload Plasma yourself"
-        fi
+    if [[ "$SKIP_RESTART" != 1 ]] && systemctl --user is-active --quiet plasma-plasmashell.service; then
+        systemctl --user restart plasma-plasmashell.service || warn "Reload Plasma yourself"
     fi
     log "Uninstalled. ~/.local/bin/yt-dlp was left in place if you had one."
 }
 
-if [[ "$UNINSTALL" == 1 ]]; then
-    do_uninstall
-    trap - EXIT
-    exit 0
+choose_action() {
+    local -a items=("Install" "Update" "Repair" "Uninstall" "Quit")
+    local -a actions=(install update repair uninstall quit)
+    local i=0 key rest
+    while true; do
+        printf '\033[2J\033[H'
+        printf 'kde-plasmoid-yt-dlp\n\n'
+        local n
+        for n in "${!items[@]}"; do
+            if [[ "$n" -eq "$i" ]]; then
+                printf '  > %s\n' "${items[$n]}"
+            else
+                printf '    %s\n' "${items[$n]}"
+            fi
+        done
+        printf '\nUse the arrow keys to move. Press Enter to confirm.\n'
+        IFS= read -rsn1 key || die "could not read the menu"
+        if [[ "$key" == $'\x1b' ]]; then
+            IFS= read -rsn2 rest || true
+            case "$rest" in
+                '[A') i=$(( (i + ${#items[@]} - 1) % ${#items[@]} )) ;;
+                '[B') i=$(( (i + 1) % ${#items[@]} )) ;;
+            esac
+        elif [[ -z "$key" ]]; then
+            ACTION="${actions[$i]}"
+            printf '\033[2J\033[H'
+            return 0
+        fi
+    done
+}
+
+ROOT="$(script_dir)"
+if ! sources_ready; then
+    download_and_exec "$@"
 fi
+BUILD_DIR="${BUILD_DIR:-$ROOT/build}"
 
-need_cmd cmake || { print_dep_help; die "cmake was not found"; }
-need_cmd g++ || { print_dep_help; die "g++ was not found"; }
-need_cmd kpackagetool6 || { print_dep_help; die "kpackagetool6 was not found"; }
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --install) ACTION=install ;;
+        --update) ACTION=update ;;
+        --repair) ACTION=repair ;;
+        --uninstall) ACTION=uninstall ;;
+        --skip-restart) SKIP_RESTART=1 ;;
+        --skip-runtime) SKIP_RUNTIME=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) die "Unknown option: $1 (try --help)" ;;
+    esac
+    shift
+done
 
-if ! need_cmd ffmpeg; then
-    warn "ffmpeg is not installed. Downloads that merge or convert media will fail until you install it."
-fi
+trap on_exit EXIT
 
-log "Building"
-if ! cmake -S "$ROOT" -B "$BUILD_DIR" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX="${HOME}/.local"; then
-    print_dep_help
-    die "cmake configuration failed"
-fi
-if ! cmake --build "$BUILD_DIR" --parallel "$(nproc 2>/dev/null || echo 2)"; then
-    print_dep_help
-    die "build failed"
-fi
-ctest --test-dir "$BUILD_DIR" --output-on-failure
-
-STAGE="$(mktemp -d)"
-cmake --install "$BUILD_DIR" --prefix "$STAGE" >/dev/null
-
-remove_old_updater
-if [[ "$SKIP_RUNTIME" != 1 ]]; then
-    install -D -m 755 "${STAGE}/share/com.zrn59.ytdlp/bin/yt-dlp-update.sh" \
-        "${RUNTIME_BIN}/yt-dlp-update.sh"
-    if ! "${RUNTIME_BIN}/yt-dlp-update.sh"; then
-        warn "yt-dlp was not downloaded. Use the refresh button in the widget when you are online."
+if [[ -z "$ACTION" ]]; then
+    if [[ -t 0 && -t 1 ]]; then
+        choose_action
+    else
+        ACTION=install
     fi
-    install_deno
 fi
 
-remove_qml_path_hacks
-install_package "$STAGE"
-rm -rf "$STAGE"
-enable_timer
-
-if [[ "$PLASMA_STOPPED" == 1 ]]; then
-    start_plasma
-else
-    if [[ "$SKIP_RESTART" != 1 ]] && systemctl --user is-active --quiet plasma-plasmashell.service; then
-        log "Reloading Plasma"
-        systemctl --user restart plasma-plasmashell.service
-    fi
-fi
-
-echo
-echo "Installed."
-echo "  Widget:  ${DATA_HOME}/plasma/plasmoids/${PLASMOID_ID}"
-echo "  yt-dlp:  ${RUNTIME_BIN}/yt-dlp"
-echo "  Updates: systemctl --user list-timers ${UNIT_NAME}.timer"
-echo
-echo "Add it from the panel: Add Widgets → kde-plasmoid-yt-dlp"
-if [[ "$SKIP_RESTART" == 1 ]]; then
-    echo "Plasma was not reloaded. Log out once if the widget was already on the panel."
-fi
+case "$ACTION" in
+    install|repair) do_install ;;
+    update) do_update ;;
+    uninstall) do_uninstall ;;
+    quit) exit 0 ;;
+    *) die "Unknown action: $ACTION" ;;
+esac

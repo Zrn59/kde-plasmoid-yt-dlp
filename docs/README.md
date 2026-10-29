@@ -28,9 +28,10 @@ Discover может показать проект, но C++-плагин всё 
 ## Установка
 
 ```bash
-cd kde-plasmoid-yt-dlp
-./install.sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Zrn59/kde-plasmoid-yt-dlp/main/install.sh)"
 ```
+
+Или из клона: `./install.sh`. В меню есть установка, обновление, починка и удаление.
 
 Скрипт собирает виджет под локальные Qt и Plasma, ставит отдельный yt-dlp в `~/.local/share/com.zrn59.ytdlp/bin/` и включает ежедневный таймер `com.zrn59.ytdlp-update.timer`. Файл сверяется по SHA-256. Обновление не вызывает `apt` и `yt-dlp -U`.
 

@@ -28,9 +28,10 @@ Discover can show the project, but the C++ plugin still has to be built with `./
 ## Install
 
 ```bash
-cd kde-plasmoid-yt-dlp
-./install.sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Zrn59/kde-plasmoid-yt-dlp/main/install.sh)"
 ```
+
+Or from a clone: `./install.sh`. The menu can install, update, repair, or uninstall.
 
 The script builds the widget against the Qt and Plasma on this machine, installs a private yt-dlp under `~/.local/share/com.zrn59.ytdlp/bin/`, and enables a daily update timer (`com.zrn59.ytdlp-update.timer`). The binary is checked with SHA-256. The updater does not call `apt` or `yt-dlp -U`.
 
