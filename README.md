@@ -61,4 +61,6 @@ The KDE Store page is for finding the project. The widget includes a small C++ p
 - KDE notifications
 - Files are saved under the title, for example `Bad Apple!!.mp4`
 
+Packages for apt and the AUR: [docs/en/packaging.md](docs/en/packaging.md).
+
 MIT. See [LICENSE](LICENSE).

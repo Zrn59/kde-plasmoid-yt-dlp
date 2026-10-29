@@ -1,0 +1,32 @@
+Source: kde-plasmoid-yt-dlp
+Section: kde
+Priority: optional
+Maintainer: Zrn59 <151060767+Zrn59@users.noreply.github.com>
+Build-Depends:
+ cmake,
+ debhelper-compat (= 13),
+ extra-cmake-modules,
+ g++,
+ libkf6i18n-dev,
+ libkf6notifications-dev,
+ pkg-config,
+ qt6-base-dev,
+ qt6-declarative-dev,
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://github.com/Zrn59/kde-plasmoid-yt-dlp
+
+Package: kde-plasmoid-yt-dlp
+Architecture: any
+Depends:
+ ${misc:Depends},
+ ${shlibs:Depends},
+ curl,
+ ffmpeg,
+ plasma-workspace,
+Description: Plasma 6 widget that downloads video and audio with yt-dlp
+ kde-plasmoid-yt-dlp is a panel widget. It is not the yt-dlp program.
+ .
+ The widget keeps its own yt-dlp under the home directory and updates that
+ copy daily. It does not replace a system yt-dlp and does not change
+ QML paths used by other widgets.

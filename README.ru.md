@@ -61,4 +61,6 @@ cd kde-plasmoid-yt-dlp
 - Уведомления KDE
 - Файл сохраняется по названию, например `Bad Apple!!.mp4`
 
+Пакеты для apt и AUR: [docs/packaging.md](docs/packaging.md).
+
 MIT. Текст в [LICENSE](LICENSE).
