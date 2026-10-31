@@ -8,7 +8,7 @@
         "Description[ru]": "Виджет Plasma: загрузка видео и аудио через yt-dlp",
         "Icon": "folder-download",
         "Category": "Utilities",
-        "Version": "2.0.1",
+        "Version": "2.1.0",
         "License": "MIT",
         "Authors": [
             {

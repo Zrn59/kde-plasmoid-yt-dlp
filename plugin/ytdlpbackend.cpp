@@ -5,14 +5,24 @@
 #include <QClipboard>
 #include <QDateTime>
 #include <QDesktopServices>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QJsonArray>
+#include <QMimeData>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QSaveFile>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
+#include <QSet>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUrl>
@@ -83,6 +93,63 @@ bool isSidecarPath(const QString &path)
         || ext == QLatin1String("description");
 }
 
+void trimStreamBuf(QByteArray &buf)
+{
+    constexpr int kMaxStreamBuf = 256 * 1024;
+    if (buf.size() <= kMaxStreamBuf) {
+        return;
+    }
+    const int cut = buf.size() - kMaxStreamBuf;
+    const int newline = buf.indexOf('\n', cut);
+    buf.remove(0, newline >= 0 ? newline + 1 : cut);
+}
+
+void removeFreshThumbSidecars(const QString &videoPath, qint64 startedAtMs)
+{
+    const QFileInfo info(videoPath);
+    if (!info.exists() || info.isSymLink()) {
+        return;
+    }
+    const QString suffix = info.suffix().toLower();
+    if (suffix == QLatin1String("webp") || suffix == QLatin1String("png")
+        || suffix == QLatin1String("jpg") || suffix == QLatin1String("jpeg")) {
+        return;
+    }
+    const QDir dir = info.dir();
+    const QString base = info.completeBaseName();
+    const QDateTime started = QDateTime::fromMSecsSinceEpoch(startedAtMs);
+    const QStringList extras = {QStringLiteral("webp"), QStringLiteral("png"), QStringLiteral("jpg"), QStringLiteral("jpeg")};
+    for (const QString &extra : extras) {
+        const QFileInfo sidecar(dir.filePath(base + QLatin1Char('.') + extra));
+        if (!sidecar.exists() || sidecar.isSymLink()) {
+            continue;
+        }
+        if (startedAtMs > 0 && sidecar.lastModified() < started.addSecs(-2)) {
+            continue;
+        }
+        QFile::remove(sidecar.absoluteFilePath());
+    }
+}
+
+bool moveFileTo(const QString &from, const QString &to)
+{
+    if (from == to) {
+        return true;
+    }
+    QDir().mkpath(QFileInfo(to).absolutePath());
+    if (QFile::exists(to)) {
+        QFile::remove(to);
+    }
+    if (QFile::rename(from, to)) {
+        return true;
+    }
+    if (!QFile::copy(from, to)) {
+        return false;
+    }
+    QFile::remove(from);
+    return true;
+}
+
 bool hasStreamRole(const QString &path, const QString &role)
 {
     QString name = QFileInfo(path).fileName();
@@ -113,12 +180,28 @@ YtdlpBackend::YtdlpBackend(QObject *parent)
     , m_ytdlpPath(findYtdlp())
     , m_ffmpegPath(findFfmpeg())
 {
+    loadState();
     refreshYtdlpVersion();
+    m_checkpointTimer = new QTimer(this);
+    m_checkpointTimer->setInterval(20000);
+    connect(m_checkpointTimer, &QTimer::timeout, this, [this]() {
+        if (!m_active.isEmpty()) {
+            saveState();
+        }
+    });
+    m_checkpointTimer->start();
     QTimer::singleShot(0, this, &YtdlpBackend::ensureRuntime);
 }
 
 YtdlpBackend::~YtdlpBackend()
 {
+    m_closing = true;
+    saveState();
+
+    for (auto *entry : std::as_const(m_active)) {
+        signalProcess(entry, SIGKILL);
+    }
+
     const auto processes = findChildren<QProcess *>(Qt::FindDirectChildrenOnly);
     for (QProcess *process : processes) {
         process->blockSignals(true);
@@ -128,6 +211,11 @@ YtdlpBackend::~YtdlpBackend()
         }
     }
     m_versionProcess = nullptr;
+    m_inspectProcess = nullptr;
+    if (m_plasmoidReply) {
+        m_plasmoidReply->abort();
+        m_plasmoidReply = nullptr;
+    }
 
     for (auto *entry : std::as_const(m_active)) {
         destroyEntry(entry);
@@ -142,11 +230,14 @@ void YtdlpBackend::destroyEntry(DownloadEntry *entry)
     }
     stopPreviewMux(entry);
     if (entry->process) {
+        entry->process->disconnect();
         if (entry->process->state() != QProcess::NotRunning) {
             signalProcess(entry, SIGKILL);
             entry->process->kill();
         }
-        entry->process->deleteLater();
+        if (!m_closing) {
+            entry->process->deleteLater();
+        }
         entry->process = nullptr;
     }
     delete entry;
@@ -174,10 +265,10 @@ bool YtdlpBackend::signalProcess(DownloadEntry *entry, int sig) const
         return false;
     }
     const pid_t pid = static_cast<pid_t>(pid64);
-    if (entry->ownProcessGroup) {
-        if (::kill(-pid, sig) == 0) {
-            return true;
-        }
+    // Only signal the group once the child has made itself the leader.
+    // Before setpgid(0, 0), the child still shares plasmashell's group.
+    if (getpgid(pid) == pid && ::kill(-pid, sig) == 0) {
+        return true;
     }
     return ::kill(pid, sig) == 0;
 }
@@ -228,6 +319,66 @@ bool YtdlpBackend::updatingYtdlp() const
     return m_updatingYtdlp;
 }
 
+bool YtdlpBackend::checkingPlasmoidUpdate() const
+{
+    return m_checkingPlasmoidUpdate;
+}
+
+bool YtdlpBackend::plasmoidUpdateAvailable() const
+{
+    return m_plasmoidUpdateAvailable;
+}
+
+QString YtdlpBackend::plasmoidUpdateNote() const
+{
+    return m_plasmoidUpdateNote;
+}
+
+QString YtdlpBackend::plasmoidLatestVersion() const
+{
+    return m_plasmoidLatestVersion;
+}
+
+QString YtdlpBackend::plasmoidReleaseUrl() const
+{
+    return m_plasmoidReleaseUrl;
+}
+
+QVariantList YtdlpBackend::history() const
+{
+    return m_history;
+}
+
+QString YtdlpBackend::linkInfo() const
+{
+    return m_linkInfo;
+}
+
+bool YtdlpBackend::linkBusy() const
+{
+    return m_linkBusy;
+}
+
+bool YtdlpBackend::linkInfoError() const
+{
+    return m_linkInfoError;
+}
+
+void YtdlpBackend::copyText(const QString &text) const
+{
+    if (text.isEmpty()) {
+        return;
+    }
+    if (QClipboard *clipboard = QGuiApplication::clipboard()) {
+        clipboard->setText(text);
+    }
+}
+
+QString YtdlpBackend::stateFilePath() const
+{
+    return runtimeRoot() + QStringLiteral("/state.json");
+}
+
 QString YtdlpBackend::defaultVideoFolder() const
 {
     return QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
@@ -242,6 +393,39 @@ bool YtdlpBackend::isValidUrl(const QString &url) const
 {
     const QString trimmed = url.trimmed();
     return trimmed.startsWith(QStringLiteral("http://")) || trimmed.startsWith(QStringLiteral("https://"));
+}
+
+QString YtdlpBackend::httpUrlFromMime(QObject *mimeObject) const
+{
+    const auto *mime = qobject_cast<const QMimeData *>(mimeObject);
+    if (!mime) {
+        return {};
+    }
+
+    QStringList parts;
+    if (mime->hasUrls()) {
+        for (const QUrl &url : mime->urls()) {
+            parts << url.toString();
+        }
+    }
+    if (mime->hasText()) {
+        parts << mime->text();
+    }
+    if (mime->hasHtml()) {
+        parts << mime->html();
+    }
+    if (mime->hasFormat(QStringLiteral("text/uri-list"))) {
+        parts << QString::fromUtf8(mime->data(QStringLiteral("text/uri-list")));
+    }
+    if (mime->hasFormat(QStringLiteral("text/x-moz-url"))) {
+        const QByteArray raw = mime->data(QStringLiteral("text/x-moz-url"));
+        parts << QString::fromUtf16(reinterpret_cast<const char16_t *>(raw.constData()), raw.size() / 2);
+    }
+
+    QString blob = parts.join(QLatin1Char('\n'));
+    blob.remove(QChar(0));
+    const QString url = extractHttpUrl(blob);
+    return isValidUrl(url) ? url : QString();
 }
 
 QString YtdlpBackend::pasteFromClipboard() const
@@ -360,6 +544,109 @@ void YtdlpBackend::refreshYtdlpVersion()
         process->deleteLater();
     });
     process->start();
+}
+
+void YtdlpBackend::checkPlasmoidUpdate(const QString &currentVersion)
+{
+    m_plasmoidVersion = currentVersion.trimmed();
+    ++m_plasmoidUpdateGeneration;
+    if (m_plasmoidReply) {
+        QNetworkReply *old = m_plasmoidReply;
+        m_plasmoidReply = nullptr;
+        old->abort();
+    }
+    if (!m_network) {
+        m_network = new QNetworkAccessManager(this);
+    }
+    m_checkingPlasmoidUpdate = true;
+    m_plasmoidUpdateAvailable = false;
+    m_plasmoidUpdateNote.clear();
+    m_plasmoidLatestVersion.clear();
+    m_plasmoidReleaseUrl.clear();
+    Q_EMIT plasmoidUpdateChanged();
+    requestPlasmoidFeed(QUrl(QStringLiteral("https://api.github.com/repos/Zrn59/kde-plasmoid-yt-dlp/releases/latest")), false);
+}
+
+void YtdlpBackend::requestPlasmoidFeed(const QUrl &url, bool tags)
+{
+    const int generation = m_plasmoidUpdateGeneration;
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("kde-plasmoid-yt-dlp"));
+    request.setRawHeader("Accept", "application/vnd.github+json");
+    request.setTransferTimeout(15000);
+    QNetworkReply *reply = m_network->get(request);
+    m_plasmoidReply = reply;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation, tags]() {
+        if (m_plasmoidReply == reply) {
+            m_plasmoidReply = nullptr;
+        }
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QByteArray body = reply->readAll();
+        const auto error = reply->error();
+        reply->deleteLater();
+        if (m_closing || generation != m_plasmoidUpdateGeneration) {
+            return;
+        }
+        if (!tags && status == 404) {
+            requestPlasmoidFeed(QUrl(QStringLiteral("https://api.github.com/repos/Zrn59/kde-plasmoid-yt-dlp/tags?per_page=100")), true);
+            return;
+        }
+        if (error != QNetworkReply::NoError || status >= 400) {
+            applyPlasmoidUpdateResult(QString(), QString());
+            return;
+        }
+        finishPlasmoidFeed(body, status, tags);
+    });
+}
+
+void YtdlpBackend::finishPlasmoidFeed(const QByteArray &body, int status, bool tags)
+{
+    Q_UNUSED(status)
+    const QJsonDocument document = QJsonDocument::fromJson(body);
+    QString latest;
+    QString url;
+    if (!tags && document.isObject()) {
+        const QJsonObject object = document.object();
+        latest = object.value(QStringLiteral("tag_name")).toString().trimmed();
+        url = object.value(QStringLiteral("html_url")).toString().trimmed();
+    } else if (tags && document.isArray()) {
+        const QJsonArray array = document.array();
+        for (const QJsonValue &value : array) {
+            const QString name = value.toObject().value(QStringLiteral("name")).toString().trimmed();
+            if (name.isEmpty()) {
+                continue;
+            }
+            if (latest.isEmpty() || compareVersions(name, latest) > 0) {
+                latest = name;
+            }
+        }
+        if (!latest.isEmpty()) {
+            url = QStringLiteral("https://github.com/Zrn59/kde-plasmoid-yt-dlp/releases/tag/") + latest;
+        }
+    }
+    applyPlasmoidUpdateResult(latest, url);
+}
+
+void YtdlpBackend::applyPlasmoidUpdateResult(const QString &latest, const QString &url)
+{
+    m_checkingPlasmoidUpdate = false;
+    QString shown = latest.trimmed();
+    if (shown.startsWith(QLatin1Char('v'), Qt::CaseInsensitive)) {
+        shown = shown.mid(1);
+    }
+    m_plasmoidLatestVersion = shown;
+    m_plasmoidReleaseUrl = url;
+    if (shown.isEmpty()) {
+        m_plasmoidUpdateAvailable = false;
+        m_plasmoidUpdateNote = i18n("could not check");
+    } else if (compareVersions(shown, m_plasmoidVersion) > 0) {
+        m_plasmoidUpdateAvailable = true;
+        m_plasmoidUpdateNote = i18n("%1 is available", shown);
+    } else {
+        m_plasmoidUpdateAvailable = false;
+        m_plasmoidUpdateNote = i18n("up to date");
+    }
+    Q_EMIT plasmoidUpdateChanged();
 }
 
 void YtdlpBackend::ensureRuntime()
@@ -603,6 +890,95 @@ bool YtdlpBackend::isAudioOnlyMode(const DownloadEntry &entry)
         == static_cast<int>(DownloadMode::AudioOnly);
 }
 
+QString YtdlpBackend::previewCacheRoot()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation)
+        + QStringLiteral("/com.zrn59.ytdlp/preview");
+}
+
+void YtdlpBackend::removePreviewWork(const DownloadEntry &entry) const
+{
+    const QString dir = QDir::cleanPath(entry.previewWorkDir);
+    if (!isManagedScratch(dir) || QFileInfo(dir).isSymLink()) {
+        return;
+    }
+    QDir(dir).removeRecursively();
+}
+
+QString YtdlpBackend::locatePreviewSource(const QString &destination, const QString &workDir) const
+{
+    const QString base = QFileInfo(destination).fileName();
+    const QStringList candidates = {
+        workDir.isEmpty() ? QString() : QDir(workDir).filePath(base),
+        workDir.isEmpty() ? QString() : QDir(workDir).filePath(base + QStringLiteral(".part")),
+        destination,
+        destination + QStringLiteral(".part"),
+    };
+    QString best;
+    qint64 bestSize = 0;
+    for (const QString &candidate : candidates) {
+        if (candidate.isEmpty() || !QFile::exists(candidate)) {
+            continue;
+        }
+        const qint64 size = QFileInfo(candidate).size();
+        if (size > bestSize) {
+            best = candidate;
+            bestSize = size;
+        }
+    }
+    return best;
+}
+
+QString YtdlpBackend::publishPreviewDownload(DownloadEntry *entry) const
+{
+    if (!entry || entry->previewWorkDir.isEmpty()) {
+        return entry ? entry->filePath : QString();
+    }
+
+    QString source = entry->filePath;
+    if (!source.isEmpty() && !QFile::exists(source)) {
+        const QString inHome = QDir(entry->outputDir).filePath(QFileInfo(source).fileName());
+        if (QFile::exists(inHome)) {
+            return inHome;
+        }
+    }
+    const QDir work(entry->previewWorkDir);
+    const QRegularExpression fragmentRe(QStringLiteral(R"(\.f\d+\.)"));
+    const auto skipName = [&fragmentRe](const QString &name) {
+        return name == QStringLiteral("watch.mkv")
+            || name == QStringLiteral("preview-mux.mkv")
+            || name.endsWith(QStringLiteral(".tmp"))
+            || name.endsWith(QStringLiteral(".part"))
+            || name.endsWith(QStringLiteral(".ytdl"))
+            || fragmentRe.match(name).hasMatch();
+    };
+
+    if (source.isEmpty() || !QFile::exists(source) || skipName(QFileInfo(source).fileName())) {
+        source.clear();
+        qint64 bestSize = 0;
+        const QFileInfoList files = work.entryInfoList(QDir::Files);
+        for (const QFileInfo &info : files) {
+            if (skipName(info.fileName()) || info.size() <= bestSize) {
+                continue;
+            }
+            source = info.absoluteFilePath();
+            bestSize = info.size();
+        }
+    }
+
+    if (source.isEmpty() || !pathIsInside(source, entry->previewWorkDir)) {
+        return entry->filePath;
+    }
+
+    const QString destination = !entry->previewMuxPath.isEmpty()
+        ? entry->previewMuxPath
+        : QDir(entry->outputDir).filePath(QFileInfo(source).fileName());
+    if (!moveFileTo(source, destination)) {
+        return source;
+    }
+    return destination;
+}
+
 QString YtdlpBackend::streamBaseName(const QString &path)
 {
     QString name = QFileInfo(path).completeBaseName();
@@ -683,7 +1059,7 @@ void YtdlpBackend::ensurePreviewMuxTimer(DownloadEntry *entry)
     }
 
     entry->muxTimer = new QTimer(this);
-    entry->muxTimer->setInterval(3000);
+    entry->muxTimer->setInterval(20000);
     const int id = entry->id;
     connect(entry->muxTimer, &QTimer::timeout, this, [this, id]() {
         if (auto *active = findActiveEntry(id)) {
@@ -700,32 +1076,51 @@ void YtdlpBackend::stopPreviewMux(DownloadEntry *entry)
     }
     if (entry->muxTimer) {
         entry->muxTimer->stop();
-        entry->muxTimer->deleteLater();
+        entry->muxTimer->disconnect();
+        if (!m_closing) {
+            entry->muxTimer->deleteLater();
+        }
         entry->muxTimer = nullptr;
     }
     if (entry->muxProcess) {
+        entry->muxProcess->disconnect();
         if (entry->muxProcess->state() != QProcess::NotRunning) {
             entry->muxProcess->kill();
         }
-        entry->muxProcess->deleteLater();
+        if (!m_closing) {
+            entry->muxProcess->deleteLater();
+        }
         entry->muxProcess = nullptr;
     }
     if (!entry->previewMuxPath.isEmpty()) {
-        QFile::remove(entry->previewMuxPath + QStringLiteral(".tmp"));
+        QFile::remove(entry->previewMuxPath + QStringLiteral(".part"));
     }
 }
 
 void YtdlpBackend::updatePreviewMux(DownloadEntry *entry)
 {
-    if (!entry || !entry->previewEnabled || entry->paused || isAudioOnlyMode(*entry)) {
+    if (!entry || !entry->previewEnabled || entry->paused || entry->merging || isAudioOnlyMode(*entry)) {
         return;
     }
     if (entry->videoPartPath.isEmpty() || entry->audioPartPath.isEmpty()) {
         return;
     }
-    if (QFileInfo(entry->videoPartPath).size() < 128 * 1024
-        || QFileInfo(entry->audioPartPath).size() < 64 * 1024) {
+    const QString videoSource = locatePreviewSource(entry->videoPartPath, entry->previewWorkDir);
+    const QString audioSource = locatePreviewSource(entry->audioPartPath, entry->previewWorkDir);
+    if (videoSource.isEmpty() || audioSource.isEmpty()) {
         return;
+    }
+    const qint64 videoBytes = QFileInfo(videoSource).size();
+    const qint64 audioBytes = QFileInfo(audioSource).size();
+    if (videoBytes < 64 * 1024 || audioBytes < 32 * 1024) {
+        return;
+    }
+    if (entry->muxVideoBytes >= 0 && !entry->previewMuxPath.isEmpty() && QFileInfo(entry->previewMuxPath).size() > 0) {
+        const bool videoGrew = videoBytes - entry->muxVideoBytes >= 16 * 1024 * 1024;
+        const bool audioGrew = audioBytes - entry->muxAudioBytes >= 1024 * 1024;
+        if (!videoGrew && !audioGrew) {
+            return;
+        }
     }
     if (entry->muxProcess && entry->muxProcess->state() != QProcess::NotRunning) {
         return;
@@ -735,12 +1130,18 @@ void YtdlpBackend::updatePreviewMux(DownloadEntry *entry)
     }
 
     if (entry->previewMuxPath.isEmpty()) {
-        const QFileInfo videoInfo(entry->videoPartPath);
-        entry->previewMuxPath = videoInfo.dir().filePath(streamBaseName(entry->videoPartPath)
-                                                          + QStringLiteral(".watch.mkv"));
+        QString base = streamBaseName(entry->videoPartPath);
+        base.replace(QLatin1Char('/'), QLatin1Char('_'));
+        base.replace(QLatin1Char('\\'), QLatin1Char('_'));
+        if (base.isEmpty()) {
+            base = QStringLiteral("preview");
+        }
+        QDir().mkpath(entry->outputDir);
+        // Same name the finished download will have, so the player keeps one file.
+        entry->previewMuxPath = QDir(entry->outputDir).filePath(base + QStringLiteral(".mkv"));
     }
 
-    const QString tempPath = entry->previewMuxPath + QStringLiteral(".tmp");
+    const QString tempPath = entry->previewMuxPath + QStringLiteral(".part");
 
     auto *process = new QProcess(this);
     entry->muxProcess = process;
@@ -752,15 +1153,15 @@ void YtdlpBackend::updatePreviewMux(DownloadEntry *entry)
                            QStringLiteral("-fflags"),
                            QStringLiteral("+genpts+discardcorrupt+igndts"),
                            QStringLiteral("-i"),
-                           entry->videoPartPath,
+                           videoSource,
                            QStringLiteral("-i"),
-                           entry->audioPartPath,
+                           audioSource,
                            QStringLiteral("-c"),
                            QStringLiteral("copy"),
                            QStringLiteral("-map"),
-                           QStringLiteral("0:v:0?"),
+                           QStringLiteral("0:v:0"),
                            QStringLiteral("-map"),
-                           QStringLiteral("1:a:0?"),
+                           QStringLiteral("1:a:0"),
                            QStringLiteral("-f"),
                            QStringLiteral("matroska"),
                            tempPath});
@@ -768,17 +1169,32 @@ void YtdlpBackend::updatePreviewMux(DownloadEntry *entry)
     const int id = entry->id;
     const QString finalPath = entry->previewMuxPath;
     connect(process, &QProcess::finished, this,
-            [this, id, process, tempPath, finalPath](int exitCode, QProcess::ExitStatus) {
-                if (exitCode == 0 && QFile::exists(tempPath) && QFileInfo(tempPath).size() > 0) {
-                    QFile::remove(finalPath);
-                    QFile::rename(tempPath, finalPath);
-                } else {
+            [this, id, process, tempPath, finalPath, videoBytes, audioBytes](int exitCode, QProcess::ExitStatus status) {
+                auto *active = findActiveEntry(id);
+                if (active && active->merging) {
                     QFile::remove(tempPath);
-                }
-
-                if (auto *active = findActiveEntry(id)) {
                     if (active->muxProcess == process) {
                         active->muxProcess = nullptr;
+                    }
+                    process->deleteLater();
+                    return;
+                }
+                const bool muxed = status == QProcess::NormalExit && exitCode == 0 && QFile::exists(tempPath)
+                    && QFileInfo(tempPath).size() > 0 && moveFileTo(tempPath, finalPath);
+                if (!muxed) {
+                    const QString err = QString::fromUtf8(process->readAllStandardError()).trimmed();
+                    if (!err.isEmpty()) {
+                        qWarning("kde-plasmoid-yt-dlp preview: %s", qUtf8Printable(err));
+                    }
+                    QFile::remove(tempPath);
+                }
+                if (active) {
+                    if (active->muxProcess == process) {
+                        active->muxProcess = nullptr;
+                    }
+                    if (muxed) {
+                        active->muxVideoBytes = videoBytes;
+                        active->muxAudioBytes = audioBytes;
                     }
                     syncActiveRow(*active);
                 }
@@ -813,6 +1229,7 @@ void YtdlpBackend::updateFailedList()
         m_failedDownloads.append(entryToVariant(entry, true));
     }
     Q_EMIT failedDownloadsChanged();
+    scheduleSave();
 }
 
 void YtdlpBackend::updateActiveList()
@@ -831,19 +1248,404 @@ void YtdlpBackend::updateActiveList()
 
 void YtdlpBackend::notify(const QString &summary, const QString &body, const QString &iconName, int timeoutMs)
 {
-    Q_UNUSED(timeoutMs)
     auto *notification = new KNotification(QStringLiteral("download"), KNotification::CloseOnTimeout);
     notification->setComponentName(QStringLiteral("com.zrn59.ytdlp"));
     notification->setTitle(summary);
     notification->setText(body);
     notification->setIconName(iconName);
+    if (timeoutMs >= 8000) {
+        notification->setUrgency(KNotification::HighUrgency);
+    } else if (timeoutMs <= 3000) {
+        notification->setUrgency(KNotification::LowUrgency);
+    }
     notification->sendEvent();
+}
+
+void YtdlpBackend::scheduleSave()
+{
+    if (!m_saveTimer) {
+        m_saveTimer = new QTimer(this);
+        m_saveTimer->setSingleShot(true);
+        m_saveTimer->setInterval(400);
+        connect(m_saveTimer, &QTimer::timeout, this, [this]() { saveState(); });
+    }
+    m_saveTimer->start();
+}
+
+QJsonObject YtdlpBackend::entryToJson(const DownloadEntry &entry, bool running) const
+{
+    QString log = entry.errorLog;
+    if (log.size() > 8000) {
+        log = log.right(8000);
+    }
+    QJsonObject object;
+    object.insert(QStringLiteral("id"), entry.id);
+    object.insert(QStringLiteral("url"), entry.fullUrl);
+    object.insert(QStringLiteral("title"), entry.title);
+    object.insert(QStringLiteral("status"), entry.status);
+    object.insert(QStringLiteral("progress"), entry.progress);
+    object.insert(QStringLiteral("filePath"), entry.filePath);
+    object.insert(QStringLiteral("outputDir"), entry.outputDir);
+    object.insert(QStringLiteral("formatLabel"), entry.formatLabel);
+    object.insert(QStringLiteral("errorLog"), log);
+    object.insert(QStringLiteral("running"), running);
+    object.insert(QStringLiteral("previewWorkDir"), entry.previewWorkDir);
+    object.insert(QStringLiteral("options"), QJsonObject::fromVariantMap(entry.options));
+    return object;
+}
+
+bool YtdlpBackend::isManagedScratch(const QString &path) const
+{
+    const QString root = QDir::cleanPath(previewCacheRoot());
+    const QString absolute = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    return pathIsInside(absolute, root) && absolute != root;
+}
+
+void YtdlpBackend::sweepOrphanScratch() const
+{
+    const QString rootPath = previewCacheRoot();
+    QDir root(rootPath);
+    if (!root.exists()) {
+        return;
+    }
+
+    QSet<QString> keep;
+    for (const DownloadEntry &entry : m_failed) {
+        if (isManagedScratch(entry.previewWorkDir)) {
+            keep.insert(QDir::cleanPath(entry.previewWorkDir));
+        }
+        const QString byId = QDir::cleanPath(root.filePath(QString::number(entry.id)));
+        if (QFileInfo(byId).isDir()) {
+            keep.insert(byId);
+        }
+    }
+
+    const QFileInfoList dirs = root.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QFileInfo &info : dirs) {
+        bool numeric = !info.fileName().isEmpty();
+        for (const QChar c : info.fileName()) {
+            if (!c.isDigit()) {
+                numeric = false;
+                break;
+            }
+        }
+        if (!numeric) {
+            continue;
+        }
+        const QString absolute = QDir::cleanPath(info.absoluteFilePath());
+        if (keep.contains(absolute) || !isManagedScratch(absolute)) {
+            continue;
+        }
+        if (info.isSymLink()) {
+            QFile::remove(info.absoluteFilePath());
+        } else {
+            QDir(absolute).removeRecursively();
+        }
+    }
+}
+
+YtdlpBackend::DownloadEntry YtdlpBackend::entryFromJson(const QJsonObject &object) const
+{
+    DownloadEntry entry;
+    entry.id = object.value(QStringLiteral("id")).toInt();
+    entry.fullUrl = object.value(QStringLiteral("url")).toString();
+    entry.displayUrl = entry.fullUrl.length() > 60 ? entry.fullUrl.left(57) + QStringLiteral("...") : entry.fullUrl;
+    entry.title = object.value(QStringLiteral("title")).toString();
+    entry.status = object.value(QStringLiteral("status")).toString();
+    entry.progress = object.value(QStringLiteral("progress")).toDouble();
+    entry.filePath = object.value(QStringLiteral("filePath")).toString();
+    entry.outputDir = object.value(QStringLiteral("outputDir")).toString();
+    entry.formatLabel = object.value(QStringLiteral("formatLabel")).toString();
+    entry.errorLog = object.value(QStringLiteral("errorLog")).toString();
+    entry.failed = true;
+    entry.finished = true;
+    entry.options = object.value(QStringLiteral("options")).toObject().toVariantMap();
+    if (!entry.options.contains(QStringLiteral("url"))) {
+        entry.options.insert(QStringLiteral("url"), entry.fullUrl);
+    }
+    entry.previewWorkDir = object.value(QStringLiteral("previewWorkDir")).toString();
+    if (entry.previewWorkDir.isEmpty()) {
+        entry.previewWorkDir = entry.options.value(QStringLiteral("scratchDir")).toString();
+    }
+    if (!isManagedScratch(entry.previewWorkDir)) {
+        const QString guess = previewCacheRoot() + QLatin1Char('/') + QString::number(entry.id);
+        entry.previewWorkDir = QFileInfo(guess).isDir() ? QDir::cleanPath(QFileInfo(guess).absoluteFilePath()) : QString();
+    } else {
+        entry.previewWorkDir = QDir::cleanPath(QFileInfo(entry.previewWorkDir).absoluteFilePath());
+    }
+    return entry;
+}
+
+void YtdlpBackend::saveState() const
+{
+    QJsonArray stopped;
+    for (const DownloadEntry &entry : m_failed) {
+        if (!entry.fullUrl.isEmpty()) {
+            stopped.append(entryToJson(entry, false));
+        }
+    }
+    for (const DownloadEntry *entry : std::as_const(m_active)) {
+        if (entry && !entry->finished && !entry->fullUrl.isEmpty()) {
+            stopped.append(entryToJson(*entry, true));
+        }
+    }
+    while (stopped.size() > 40) {
+        stopped.removeAt(0);
+    }
+
+    QJsonArray history;
+    const int historyCount = qMin(30, m_history.size());
+    for (int i = 0; i < historyCount; ++i) {
+        history.append(QJsonObject::fromVariantMap(m_history.at(i).toMap()));
+    }
+
+    QJsonObject root;
+    root.insert(QStringLiteral("nextId"), m_nextId);
+    root.insert(QStringLiteral("stopped"), stopped);
+    root.insert(QStringLiteral("history"), history);
+
+    QDir().mkpath(runtimeRoot());
+    QSaveFile file(stateFilePath());
+    if (!file.open(QIODevice::WriteOnly)) {
+        return;
+    }
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
+    file.commit();
+}
+
+void YtdlpBackend::loadState()
+{
+    QFile file(stateFilePath());
+    if (!file.open(QIODevice::ReadOnly)) {
+        return;
+    }
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+    if (!doc.isObject()) {
+        return;
+    }
+    const QJsonObject root = doc.object();
+    m_nextId = qMax(1, root.value(QStringLiteral("nextId")).toInt(1));
+    int maxId = 0;
+
+    const QJsonArray stopped = root.value(QStringLiteral("stopped")).toArray();
+    for (const QJsonValue &value : stopped) {
+        if (!value.isObject()) {
+            continue;
+        }
+        const QJsonObject object = value.toObject();
+        DownloadEntry entry = entryFromJson(object);
+        if (entry.fullUrl.isEmpty()) {
+            continue;
+        }
+        if (object.value(QStringLiteral("running")).toBool()) {
+            entry.status = i18n("Interrupted. Retry continues the partial file.");
+        }
+        maxId = qMax(maxId, entry.id);
+        m_failed.append(entry);
+    }
+    while (m_failed.size() > 40) {
+        m_failed.removeFirst();
+    }
+    sweepOrphanScratch();
+
+    const QJsonArray history = root.value(QStringLiteral("history")).toArray();
+    for (const QJsonValue &value : history) {
+        if (!value.isObject()) {
+            continue;
+        }
+        const QVariantMap item = value.toObject().toVariantMap();
+        if (item.value(QStringLiteral("url")).toString().isEmpty() && item.value(QStringLiteral("filePath")).toString().isEmpty()) {
+            continue;
+        }
+        m_history.append(item);
+        maxId = qMax(maxId, item.value(QStringLiteral("id")).toInt());
+    }
+    while (m_history.size() > 30) {
+        m_history.removeLast();
+    }
+
+    m_nextId = qMax(m_nextId, maxId + 1);
+    updateFailedList();
+    Q_EMIT historyChanged();
+}
+
+void YtdlpBackend::rememberDownload(const DownloadEntry &entry)
+{
+    const QString path = entry.filePath;
+    if (!path.isEmpty()) {
+        for (int i = m_history.size() - 1; i >= 0; --i) {
+            if (m_history.at(i).toMap().value(QStringLiteral("filePath")).toString() == path) {
+                m_history.removeAt(i);
+            }
+        }
+    }
+    QVariantMap item;
+    item.insert(QStringLiteral("id"), entry.id);
+    item.insert(QStringLiteral("title"), entry.title.isEmpty() ? entry.fullUrl : entry.title);
+    item.insert(QStringLiteral("filePath"), entry.filePath);
+    item.insert(QStringLiteral("outputDir"), entry.outputDir);
+    item.insert(QStringLiteral("url"), entry.fullUrl);
+    m_history.prepend(item);
+    while (m_history.size() > 30) {
+        m_history.removeLast();
+    }
+    Q_EMIT historyChanged();
+    scheduleSave();
+}
+
+void YtdlpBackend::dismissHistory(int id)
+{
+    for (int i = 0; i < m_history.size(); ++i) {
+        if (m_history.at(i).toMap().value(QStringLiteral("id")).toInt() == id) {
+            m_history.removeAt(i);
+            Q_EMIT historyChanged();
+            scheduleSave();
+            return;
+        }
+    }
+}
+
+void YtdlpBackend::clearHistory()
+{
+    if (m_history.isEmpty()) {
+        return;
+    }
+    m_history.clear();
+    Q_EMIT historyChanged();
+    scheduleSave();
+}
+
+void YtdlpBackend::clearLinkInfo()
+{
+    ++m_inspectGeneration;
+    if (m_inspectProcess) {
+        m_inspectProcess->kill();
+        m_inspectProcess->deleteLater();
+        m_inspectProcess = nullptr;
+    }
+    const bool wasBusy = m_linkBusy;
+    const bool hadInfo = !m_linkInfo.isEmpty() || m_linkInfoError;
+    m_linkBusy = false;
+    m_linkInfo.clear();
+    m_linkInfoError = false;
+    if (wasBusy) {
+        Q_EMIT linkBusyChanged();
+    }
+    if (hadInfo) {
+        Q_EMIT linkInfoChanged();
+    }
+}
+
+void YtdlpBackend::inspectUrl(const QVariantMap &options)
+{
+    const QString url = extractHttpUrl(options.value(QStringLiteral("url")).toString());
+    if (!isValidUrl(url)) {
+        m_linkInfo = i18n("Enter a URL");
+        m_linkInfoError = true;
+        m_linkBusy = false;
+        Q_EMIT linkBusyChanged();
+        Q_EMIT linkInfoChanged();
+        return;
+    }
+    if (m_ytdlpPath.isEmpty()) {
+        m_linkInfo = i18n("yt-dlp is not installed yet. Click refresh, or run install.sh.");
+        m_linkInfoError = true;
+        m_linkBusy = false;
+        Q_EMIT linkBusyChanged();
+        Q_EMIT linkInfoChanged();
+        return;
+    }
+
+    const int generation = ++m_inspectGeneration;
+    if (m_inspectProcess) {
+        m_inspectProcess->kill();
+        m_inspectProcess->deleteLater();
+        m_inspectProcess = nullptr;
+    }
+
+    m_linkBusy = true;
+    m_linkInfoError = false;
+    m_linkInfo.clear();
+    Q_EMIT linkBusyChanged();
+    Q_EMIT linkInfoChanged();
+
+    auto *process = new QProcess(this);
+    m_inspectProcess = process;
+    QStringList args{
+        QStringLiteral("--ignore-config"),
+        QStringLiteral("--no-warnings"),
+        QStringLiteral("--flat-playlist"),
+        QStringLiteral("--skip-download"),
+        QStringLiteral("--print"),
+        QStringLiteral("%(title)s\t%(duration_string)s\t%(playlist_count)s"),
+    };
+    if (options.value(QStringLiteral("useCookies")).toBool()) {
+        const QString browser = cookiesBrowserName(options.value(QStringLiteral("cookiesBrowser")).toInt());
+        if (!browser.isEmpty()) {
+            args << QStringLiteral("--cookies-from-browser") << browser;
+        } else {
+            const QString cookies = options.value(QStringLiteral("cookiesFile")).toString();
+            if (QFile::exists(cookies)) {
+                args << QStringLiteral("--cookies") << cookies;
+            }
+        }
+    }
+    const QString jsRuntime = jsRuntimeSpec();
+    if (!jsRuntime.isEmpty()) {
+        args << QStringLiteral("--js-runtimes") << jsRuntime;
+    }
+    args << url;
+    process->setProgram(m_ytdlpPath);
+    process->setArguments(args);
+    process->setProcessEnvironment(runtimeEnvironment());
+    connect(process, &QProcess::finished, this, [this, process, generation](int code, QProcess::ExitStatus) {
+        if (generation != m_inspectGeneration) {
+            if (m_inspectProcess == process) {
+                m_inspectProcess = nullptr;
+            }
+            process->deleteLater();
+            return;
+        }
+        const QString out = QString::fromUtf8(process->readAllStandardOutput()).trimmed();
+        const QString err = extractYtdlpError(QString::fromUtf8(process->readAllStandardError()));
+        m_inspectProcess = nullptr;
+        process->deleteLater();
+        m_linkBusy = false;
+        if (code != 0 || out.isEmpty()) {
+            m_linkInfoError = true;
+            m_linkInfo = err.isEmpty() ? i18n("Could not read this link") : err;
+        } else {
+            const QString line = out.section(QLatin1Char('\n'), 0, 0);
+            const QString title = line.section(QLatin1Char('\t'), 0, 0).trimmed();
+            const QString duration = line.section(QLatin1Char('\t'), 1, 1).trimmed();
+            const QString count = line.section(QLatin1Char('\t'), 2, 2).trimmed();
+            QStringList parts;
+            if (!title.isEmpty() && title.compare(QStringLiteral("NA"), Qt::CaseInsensitive) != 0) {
+                parts << title;
+            }
+            bool countOk = false;
+            const int playlistCount = count.toInt(&countOk);
+            if (countOk && playlistCount > 1) {
+                parts << i18n("playlist, %1 items", playlistCount);
+            } else if (!duration.isEmpty() && duration.compare(QStringLiteral("NA"), Qt::CaseInsensitive) != 0) {
+                parts << duration;
+            }
+            m_linkInfoError = false;
+            m_linkInfo = parts.join(QStringLiteral(" · "));
+            if (m_linkInfo.isEmpty()) {
+                m_linkInfo = i18n("Link is readable");
+            }
+        }
+        Q_EMIT linkBusyChanged();
+        Q_EMIT linkInfoChanged();
+    });
+    process->start();
 }
 
 YtdlpFormats::DownloadOptions YtdlpBackend::optionsFromMap(const QVariantMap &map, bool resumePartial) const
 {
     DownloadOptions opts;
-    opts.url = map.value(QStringLiteral("url")).toString().trimmed();
+    opts.url = extractHttpUrl(map.value(QStringLiteral("url")).toString());
     opts.outputDir = map.value(QStringLiteral("outputDir")).toString();
     opts.mode = static_cast<DownloadMode>(map.value(QStringLiteral("downloadMode"), 0).toInt());
     opts.videoQuality = static_cast<VideoQuality>(map.value(QStringLiteral("videoQuality"), 7).toInt());
@@ -861,8 +1663,12 @@ YtdlpFormats::DownloadOptions YtdlpBackend::optionsFromMap(const QVariantMap &ma
     opts.previewMode = map.value(QStringLiteral("previewMode"), false).toBool();
     opts.useCookies = map.value(QStringLiteral("useCookies"), false).toBool();
     opts.cookiesFile = map.value(QStringLiteral("cookiesFile")).toString().trimmed();
+    opts.cookiesBrowser = map.value(QStringLiteral("cookiesBrowser"), 0).toInt();
     opts.customArgs = map.value(QStringLiteral("customArgs")).toString();
+    opts.allowUnsafeArgs = map.value(QStringLiteral("allowUnsafeArgs"), false).toBool();
     opts.downloadSections = map.value(QStringLiteral("downloadSections")).toString();
+    opts.outputTemplate = map.value(QStringLiteral("outputTemplate")).toString();
+    opts.sponsorBlockRemove = map.value(QStringLiteral("sponsorBlock")).toBool();
     opts.resumePartial = resumePartial;
     return opts;
 }
@@ -917,9 +1723,6 @@ void YtdlpBackend::launchDownload(DownloadEntry &entry, const YtdlpFormats::Down
                 if (exitCode == 0) {
                     const QString title = active->title.isEmpty() ? i18n("Download complete") : active->title;
                     finishDownload(id, true, title, false);
-                } else if (active->paused) {
-                    // SIGSTOP can look like a signal exit — ignore while paused
-                    return;
                 } else {
                     appendLog(active, QString::fromUtf8(process->readAllStandardError()));
                     m_downloadModel.updateErrorLog(active->id, active->errorLog);
@@ -933,20 +1736,6 @@ void YtdlpBackend::launchDownload(DownloadEntry &entry, const YtdlpFormats::Down
                     finishDownload(id, false, err, false);
                 }
             });
-
-    connect(process, &QProcess::started, this, [this, id]() {
-        auto *active = findActiveEntry(id);
-        if (!active || !active->process) {
-            return;
-        }
-        const pid_t pid = static_cast<pid_t>(active->process->processId());
-        if (pid <= 0) {
-            return;
-        }
-        if (setpgid(pid, pid) == 0 || getpgid(pid) == pid) {
-            active->ownProcessGroup = true;
-        }
-    });
 
     process->start();
 }
@@ -981,13 +1770,15 @@ bool YtdlpBackend::startDownload(const QVariantMap &options)
     }
 
     if (opts.useCookies) {
-        if (opts.cookiesFile.isEmpty()) {
-            setError(i18n("Cookies enabled but no cookies file selected"));
-            return false;
-        }
-        if (!QFile::exists(opts.cookiesFile)) {
-            setError(i18n("Cookies file not found: %1", opts.cookiesFile));
-            return false;
+        if (cookiesBrowserName(opts.cookiesBrowser).isEmpty()) {
+            if (opts.cookiesFile.isEmpty()) {
+                setError(i18n("Cookies enabled but no cookies file selected"));
+                return false;
+            }
+            if (!QFile::exists(opts.cookiesFile)) {
+                setError(i18n("Cookies file not found: %1", opts.cookiesFile));
+                return false;
+            }
         }
         if (YtdlpFormats::jsRuntimeSpec().isEmpty()) {
             setError(i18n("YouTube cookies need Deno or Node. Run install.sh, or install deno."));
@@ -1003,13 +1794,30 @@ bool YtdlpBackend::startDownload(const QVariantMap &options)
     entry->displayUrl = opts.url.length() > 60 ? opts.url.left(57) + QStringLiteral("...") : opts.url;
     entry->title = resume ? i18n("Resuming…") : i18n("Starting…");
     entry->status = resume ? i18n("Resuming") : i18n("Starting");
-    entry->previewEnabled = opts.previewMode;
+    entry->previewEnabled = opts.previewMode && opts.mode != DownloadMode::AudioOnly;
+    entry->audioFirst = entry->previewEnabled && opts.mode == DownloadMode::VideoWithAudio;
     entry->outputDir = opts.outputDir;
+    entry->startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    const QString requestedScratch = options.value(QStringLiteral("scratchDir")).toString();
+    if (isManagedScratch(requestedScratch)) {
+        entry->previewWorkDir = QDir::cleanPath(QFileInfo(requestedScratch).absoluteFilePath());
+    } else {
+        entry->previewWorkDir = previewCacheRoot() + QLatin1Char('/') + QString::number(entry->id);
+    }
+    QDir().mkpath(entry->previewWorkDir);
+    opts.tempDir = entry->previewWorkDir;
+    if (entry->previewEnabled) {
+        opts.previewWorkDir = entry->previewWorkDir;
+        opts.previewMode = true;
+    } else {
+        opts.previewMode = false;
+    }
     entry->options = options;
     entry->options.insert(QStringLiteral("url"), opts.url);
-    entry->options.insert(QStringLiteral("outputDir"), opts.outputDir);
+    entry->options.insert(QStringLiteral("outputDir"), entry->outputDir);
     entry->options.insert(QStringLiteral("customArgs"), opts.customArgs);
     entry->options.insert(QStringLiteral("downloadSections"), opts.downloadSections);
+    entry->options.insert(QStringLiteral("scratchDir"), entry->previewWorkDir);
 
     const int id = entry->id;
     m_active.insert(id, entry);
@@ -1035,6 +1843,7 @@ bool YtdlpBackend::startDownload(const QVariantMap &options)
     updateActiveList();
 
     clearError();
+    scheduleSave();
 
     notify(resume ? i18n("Resuming download") : i18n("Download started"),
            opts.url,
@@ -1053,6 +1862,9 @@ void YtdlpBackend::retryDownload(int id)
     QVariantMap options = failed->options;
     options.insert(QStringLiteral("resumePartial"), true);
     options.insert(QStringLiteral("url"), failed->fullUrl);
+    if (isManagedScratch(failed->previewWorkDir)) {
+        options.insert(QStringLiteral("scratchDir"), failed->previewWorkDir);
+    }
 
     if (!startDownload(options)) {
         return;
@@ -1065,6 +1877,12 @@ void YtdlpBackend::retryDownload(int id)
 
 void YtdlpBackend::dismissFailed(int id)
 {
+    for (const DownloadEntry &entry : m_failed) {
+        if (entry.id == id) {
+            removePreviewWork(entry);
+            break;
+        }
+    }
     m_failed.erase(std::remove_if(m_failed.begin(), m_failed.end(), [id](const DownloadEntry &e) { return e.id == id; }),
                   m_failed.end());
     updateFailedList();
@@ -1072,6 +1890,9 @@ void YtdlpBackend::dismissFailed(int id)
 
 void YtdlpBackend::dismissAllFailed()
 {
+    for (const DownloadEntry &entry : m_failed) {
+        removePreviewWork(entry);
+    }
     m_failed.clear();
     updateFailedList();
 }
@@ -1171,6 +1992,7 @@ void YtdlpBackend::handleStdout(int id, const QByteArray &data)
 
     entry->stdoutBuf += data;
     entry->stdoutBuf.replace('\r', '\n');
+    trimStreamBuf(entry->stdoutBuf);
 
     int idx = 0;
     while ((idx = entry->stdoutBuf.indexOf('\n')) >= 0) {
@@ -1180,9 +2002,35 @@ void YtdlpBackend::handleStdout(int id, const QByteArray &data)
     }
 }
 
-void YtdlpBackend::processStdoutLine(DownloadEntry *entry, const QString &line)
+void YtdlpBackend::processStdoutLine(DownloadEntry *entry, const QString &rawLine)
 {
-    if (!entry || line.isEmpty()) {
+    if (!entry) {
+        return;
+    }
+    const QString line = stripAnsi(rawLine).trimmed();
+    if (line.isEmpty()) {
+        return;
+    }
+
+    const ParsedProgress machineProgress = parseProgressLine(line);
+    if (machineProgress.valid) {
+        entry->progress = machineProgress.percent;
+        if (!machineProgress.speed.isEmpty()) {
+            entry->speed = machineProgress.speed;
+        }
+        if (!machineProgress.eta.isEmpty()) {
+            entry->eta = machineProgress.eta;
+        }
+        if (!entry->paused && !entry->merging) {
+            entry->status = i18n("Downloading…");
+        }
+        const int pct = static_cast<int>(std::lround(entry->progress));
+        if (pct != entry->lastEmittedProgress) {
+            entry->lastEmittedProgress = pct;
+            syncActiveRow(*entry);
+        } else {
+            m_downloadModel.updateProgress(entry->id, entry->progress, entry->speed, entry->eta, entry->status);
+        }
         return;
     }
 
@@ -1198,17 +2046,48 @@ void YtdlpBackend::processStdoutLine(DownloadEntry *entry, const QString &line)
         appendLog(entry, line + QLatin1Char('\n'));
     }
 
-    if (line.contains(QStringLiteral("[download] Destination:"))) {
+    static const QRegularExpression formatPairRe(QStringLiteral(R"(format\(s\): (\d+)\+(\d+))"));
+    const QRegularExpressionMatch formatPair = formatPairRe.match(line);
+    if (formatPair.hasMatch()) {
+        entry->firstFormatId = formatPair.captured(1);
+        entry->secondFormatId = formatPair.captured(2);
+    }
+
+    const QString alreadyPath = finishedDownloadPath(line);
+    if (!alreadyPath.isEmpty() && !isSidecarPath(alreadyPath)) {
+        entry->filePath = alreadyPath;
+        entry->previewPath = alreadyPath;
+        if (entry->outputDir.isEmpty()) {
+            entry->outputDir = QFileInfo(alreadyPath).absolutePath();
+        }
+        entry->formatLabel = formatFromPath(alreadyPath);
+        entry->title = QFileInfo(alreadyPath).completeBaseName();
+        entry->progress = 100;
+        pathsChanged = true;
+        titleChanged = true;
+    } else if (line.contains(QStringLiteral("[download] Destination:"))) {
         const QString path = line.section(QLatin1Char(':'), 1).trimmed();
         if (!path.isEmpty() && !isSidecarPath(path)) {
-            entry->filePath = path;
-            entry->formatLabel = formatFromPath(path);
-            if (entry->outputDir.isEmpty()) {
-                entry->outputDir = QFileInfo(path).absolutePath();
+            const bool scratch = pathIsInside(path, entry->previewWorkDir);
+            if (!scratch) {
+                entry->filePath = path;
+                if (entry->outputDir.isEmpty()) {
+                    entry->outputDir = QFileInfo(path).absolutePath();
+                }
             }
+            entry->formatLabel = formatFromPath(path);
             pathsChanged = true;
-            const bool audioPart = hasStreamRole(path, QStringLiteral("audio"))
-                || (!hasStreamRole(path, QStringLiteral("video")) && isLikelyAudioPart(path));
+            static const QRegularExpression formatIdRe(QStringLiteral(R"(\.f(\d+)\.)"));
+            const QRegularExpressionMatch formatId = formatIdRe.match(QFileInfo(path).fileName());
+            const QString id = formatId.hasMatch() ? formatId.captured(1) : QString();
+            const bool knownAudio = entry->audioFirst
+                ? (!entry->firstFormatId.isEmpty() && id == entry->firstFormatId)
+                : (!entry->secondFormatId.isEmpty() && id == entry->secondFormatId);
+            const bool knownVideo = entry->audioFirst
+                ? (!entry->secondFormatId.isEmpty() && id == entry->secondFormatId)
+                : (!entry->firstFormatId.isEmpty() && id == entry->firstFormatId);
+            const bool audioPart = knownAudio
+                || (!knownVideo && (hasStreamRole(path, QStringLiteral("audio")) || isLikelyAudioPart(path)));
             if (audioPart) {
                 entry->audioPartPath = path;
                 if (!entry->paused && entry->videoPartPath.isEmpty()) {
@@ -1230,9 +2109,20 @@ void YtdlpBackend::processStdoutLine(DownloadEntry *entry, const QString &line)
             }
         }
     } else if (line.contains(QStringLiteral("[Merger] Merging formats into"))) {
+        entry->merging = true;
+        stopPreviewMux(entry);
         const QString path = line.section(QLatin1Char('"'), 1, 1);
         entry->filePath = path;
         entry->previewPath = path;
+        if (entry->previewEnabled && !entry->outputDir.isEmpty() && !path.isEmpty()) {
+            const QString finalInFolder = QDir(entry->outputDir).filePath(QFileInfo(path).fileName());
+            if (entry->previewMuxPath.isEmpty()) {
+                entry->previewMuxPath = finalInFolder;
+            } else if (entry->previewMuxPath != finalInFolder && QFile::exists(entry->previewMuxPath)) {
+                QFile::rename(entry->previewMuxPath, finalInFolder);
+                entry->previewMuxPath = finalInFolder;
+            }
+        }
         entry->formatLabel = formatFromPath(path);
         entry->title = QFileInfo(path).completeBaseName();
         pathsChanged = true;
@@ -1240,7 +2130,15 @@ void YtdlpBackend::processStdoutLine(DownloadEntry *entry, const QString &line)
         if (!entry->paused) {
             entry->status = i18n("Processing");
         }
+    } else if (line.contains(QStringLiteral("[VideoRemuxer]"))) {
+        entry->merging = true;
+        stopPreviewMux(entry);
+        if (!entry->paused) {
+            entry->status = i18n("Processing");
+        }
     } else if (line.contains(QStringLiteral("[ExtractAudio] Destination:"))) {
+        entry->merging = true;
+        stopPreviewMux(entry);
         const QString path = line.section(QLatin1Char(':'), 1).trimmed();
         entry->filePath = path;
         entry->previewPath = path;
@@ -1294,6 +2192,7 @@ void YtdlpBackend::handleStderr(int id, const QByteArray &data)
     }
 
     entry->stderrBuf += data;
+    trimStreamBuf(entry->stderrBuf);
     int idx = 0;
     QString lastError;
     while ((idx = entry->stderrBuf.indexOf('\n')) >= 0) {
@@ -1339,11 +2238,19 @@ void YtdlpBackend::finishDownload(int id, bool success, const QString &message, 
     m_downloadModel.updateErrorLog(entry->id, entry->errorLog);
 
     stopPreviewMux(entry);
+    if (success) {
+        const QString watchFile = entry->previewMuxPath;
+        entry->filePath = publishPreviewDownload(entry);
+        if (!watchFile.isEmpty() && watchFile != entry->filePath) {
+            QFile::remove(watchFile);
+        }
+        removeFreshThumbSidecars(entry->filePath, entry->startedAtMs);
+        removePreviewWork(*entry);
+    } else if (cancelled) {
+        removePreviewWork(*entry);
+    }
 
     const QString filePath = entry->filePath;
-    if (success && !entry->previewMuxPath.isEmpty()) {
-        QFile::remove(entry->previewMuxPath);
-    }
     QVariantMap savedOptions = entry->options;
     savedOptions.insert(QStringLiteral("url"), entry->fullUrl);
 
@@ -1353,6 +2260,7 @@ void YtdlpBackend::finishDownload(int id, bool success, const QString &message, 
     }
 
     if (success) {
+        rememberDownload(*entry);
         Q_EMIT downloadFinished(id, true, message, filePath);
         notify(i18n("Download complete"), message, QStringLiteral("emblem-ok-symbolic"), 5000);
         m_active.remove(id);
@@ -1364,6 +2272,7 @@ void YtdlpBackend::finishDownload(int id, bool success, const QString &message, 
         destroyEntry(entry);
         removeActiveRow(id);
         updateActiveList();
+        scheduleSave();
     } else {
         DownloadEntry failedEntry;
         failedEntry.id = entry->id;
@@ -1375,6 +2284,7 @@ void YtdlpBackend::finishDownload(int id, bool success, const QString &message, 
         failedEntry.filePath = entry->filePath;
         failedEntry.outputDir = entry->outputDir;
         failedEntry.formatLabel = entry->formatLabel;
+        failedEntry.previewWorkDir = entry->previewWorkDir;
         failedEntry.errorLog = entry->errorLog;
         failedEntry.failed = true;
         failedEntry.finished = true;

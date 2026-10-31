@@ -9,6 +9,8 @@ import QtQuick.Layouts
 import org.kde.plasma.components as PlasmaComponents
 import org.kde.kirigami as Kirigami
 
+import "options.js" as Options
+
 Item {
     id: root
 
@@ -25,8 +27,11 @@ Item {
     signal retry()
     signal dismiss()
     signal openFolder()
+    signal copyLog()
 
     property bool logExpanded: false
+
+    readonly property string headline: Options.errorHeadline((errorLog || "") + "\n" + (status || ""))
 
     Layout.fillWidth: true
     width: parent ? parent.width : implicitWidth
@@ -70,6 +75,15 @@ Item {
 
                 PlasmaComponents.Label {
                     Layout.fillWidth: true
+                    visible: root.headline.length > 0
+                    text: root.headline
+                    font.bold: true
+                    wrapMode: Text.WordWrap
+                    color: Kirigami.Theme.negativeTextColor
+                }
+
+                PlasmaComponents.Label {
+                    Layout.fillWidth: true
                     text: status
                     wrapMode: Text.WordWrap
                     maximumLineCount: 3
@@ -104,6 +118,7 @@ Item {
                     icon.name: "view-refresh"
                     text: i18n("Retry")
                     onClicked: root.retry()
+                    HoverTip { label: i18n("Try this download again") }
                 }
 
                 PlasmaComponents.ToolButton {
@@ -111,7 +126,15 @@ Item {
                     display: PlasmaComponents.AbstractButton.IconOnly
                     enabled: errorLog.length > 0
                     onClicked: root.logExpanded = !root.logExpanded
-                    PlasmaComponents.ToolTip.text: i18n("Error log")
+                    HoverTip { label: i18n("Error log") }
+                }
+
+                PlasmaComponents.ToolButton {
+                    icon.name: "edit-copy"
+                    display: PlasmaComponents.AbstractButton.IconOnly
+                    enabled: errorLog.length > 0 || status.length > 0
+                    onClicked: root.copyLog()
+                    HoverTip { label: i18n("Copy error") }
                 }
 
                 PlasmaComponents.ToolButton {
@@ -119,7 +142,7 @@ Item {
                     icon.name: "folder-open"
                     display: PlasmaComponents.AbstractButton.IconOnly
                     onClicked: root.openFolder()
-                    PlasmaComponents.ToolTip.text: i18n("Open folder")
+                    HoverTip { label: i18n("Open folder") }
                 }
 
                 Item { Layout.preferredHeight: Kirigami.Units.smallSpacing }
@@ -128,7 +151,7 @@ Item {
                     icon.name: "window-close"
                     display: PlasmaComponents.AbstractButton.IconOnly
                     onClicked: root.dismiss()
-                    PlasmaComponents.ToolTip.text: i18n("Dismiss")
+                    HoverTip { label: i18n("Dismiss") }
                 }
             }
         }

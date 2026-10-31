@@ -9,6 +9,8 @@ import QtQuick.Layouts
 import org.kde.plasma.components as PlasmaComponents
 import org.kde.kirigami as Kirigami
 
+import "options.js" as Options
+
 Item {
     id: root
 
@@ -34,8 +36,11 @@ Item {
     signal preview()
     signal openFile()
     signal openFolder()
+    signal copyLog()
 
     property bool logExpanded: false
+
+    readonly property string headline: Options.errorHeadline(errorLog || "")
 
     Layout.fillWidth: true
     width: parent ? parent.width : implicitWidth
@@ -49,6 +54,8 @@ Item {
     readonly property string displayPath: {
         if (filePath.length > 0)
             return filePath
+        if (previewFile.length > 0)
+            return previewFile
         if (outputDir.length > 0)
             return outputDir
         return ""
@@ -79,6 +86,16 @@ Item {
             ColumnLayout {
                 Layout.fillWidth: true
                 spacing: Kirigami.Units.smallSpacing / 2
+
+                PlasmaComponents.Label {
+                    Layout.fillWidth: true
+                    visible: root.headline.length > 0
+                    text: root.headline
+                    wrapMode: Text.WordWrap
+                    color: Kirigami.Theme.negativeTextColor
+                    font.bold: true
+                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                }
 
                 PlasmaComponents.Label {
                     Layout.fillWidth: true
@@ -146,9 +163,7 @@ Item {
                     icon.name: "media-playback-start"
                     display: PlasmaComponents.AbstractButton.IconOnly
                     onClicked: root.preview()
-                    PlasmaComponents.ToolTip.text: previewEnabled
-                        ? i18n("Open preview")
-                        : i18n("Open file")
+                    HoverTip { label: root.previewEnabled ? i18n("Open preview") : i18n("Open file") }
                 }
 
                 PlasmaComponents.ToolButton {
@@ -156,7 +171,7 @@ Item {
                     display: PlasmaComponents.AbstractButton.IconOnly
                     enabled: displayPath.length > 0
                     onClicked: root.openFolder()
-                    PlasmaComponents.ToolTip.text: i18n("Open folder")
+                    HoverTip { label: i18n("Open folder") }
                 }
 
                 PlasmaComponents.ToolButton {
@@ -164,7 +179,15 @@ Item {
                     display: PlasmaComponents.AbstractButton.IconOnly
                     enabled: errorLog.length > 0
                     onClicked: root.logExpanded = !root.logExpanded
-                    PlasmaComponents.ToolTip.text: i18n("Log")
+                    HoverTip { label: i18n("Log") }
+                }
+
+                PlasmaComponents.ToolButton {
+                    icon.name: "edit-copy"
+                    display: PlasmaComponents.AbstractButton.IconOnly
+                    enabled: errorLog.length > 0
+                    onClicked: root.copyLog()
+                    HoverTip { label: i18n("Copy log") }
                 }
 
                 PlasmaComponents.ToolButton {
@@ -173,7 +196,7 @@ Item {
                     icon.name: "media-playback-pause"
                     display: PlasmaComponents.AbstractButton.IconOnly
                     onClicked: root.pause()
-                    PlasmaComponents.ToolTip.text: i18n("Pause")
+                    HoverTip { label: i18n("Pause") }
                 }
 
                 PlasmaComponents.ToolButton {
@@ -182,7 +205,7 @@ Item {
                     icon.name: "media-playback-start"
                     display: PlasmaComponents.AbstractButton.IconOnly
                     onClicked: root.resume()
-                    PlasmaComponents.ToolTip.text: i18n("Resume")
+                    HoverTip { label: i18n("Resume") }
                 }
 
                 Item { Layout.preferredHeight: Kirigami.Units.smallSpacing }
@@ -191,7 +214,7 @@ Item {
                     icon.name: "process-stop"
                     display: PlasmaComponents.AbstractButton.IconOnly
                     onClicked: root.cancel()
-                    PlasmaComponents.ToolTip.text: i18n("Cancel")
+                    HoverTip { label: i18n("Cancel") }
                 }
             }
         }

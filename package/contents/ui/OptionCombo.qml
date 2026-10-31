@@ -14,6 +14,7 @@ RowLayout {
 
     required property var model
     required property int currentValue
+    property string tip: ""
     signal activated(int value)
 
     spacing: Kirigami.Units.smallSpacing
@@ -46,6 +47,11 @@ RowLayout {
             function onCurrentValueChanged() {
                 combo.syncIndex()
             }
+        }
+
+        HoverTip {
+            label: root.tip
+            show: combo.hovered && root.tip.length > 0
         }
     }
 }

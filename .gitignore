@@ -9,5 +9,30 @@ CMakeLists.txt.user
 *.user
 compile_commands.json
 
-# Local distro experiments: package builds, container logs, install notes.
+# Editor
+*~
+*.swp
+.directory
+.cursor/
+
+# Debian build in the source tree
+/debian/files
+/debian/*.substvars
+/debian/*.log
+/debian/.debhelper/
+/obj-*/
+/*.deb
+/*.ddeb
+/*.buildinfo
+/*.changes
+/*.dsc
+
+# Arch build in the source tree
+/pkg/
+/src/
+/*.pkg.tar.*
+/*.tar.gz
+/*.tar.zst
+
+# Package builds and container logs
 lab/

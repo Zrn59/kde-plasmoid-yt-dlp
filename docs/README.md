@@ -1,94 +1,124 @@
-# kde-plasmoid-yt-dlp
+# Установка
 
-<div align="center">
+[English](en/README.md)
 
-[English](../README.md) · [Русский](../README.ru.md) · [Docs](en/README.md) · **Документация**
-
-<br>
-
-[![zrn59.me](https://img.shields.io/badge/⚡_Powered_by-zrn59.me-f59e0b?style=for-the-badge&labelColor=18181b)](https://zrn59.me)
-[![Donate](https://img.shields.io/badge/☕_Support_/_Donate-ff5f57?style=for-the-badge&labelColor=18181b)](https://www.donationalerts.com/r/zrn59)
-
-*Custom Bot & Web Development • Data Parsing • Isolated Docker Hosting — **[zrn59.me](https://zrn59.me)***
-
-</div>
-
----
-
-<p align="center">
-  <img src="screenshot.png" alt="Виджет yt-dlp" width="420">
-</p>
-
-Нужна Plasma 6.0 или новее. Plasma 5 не поддерживается.
-
-Страница в магазине: https://store.kde.org/p/2380466/
-
-Discover может показать проект, но C++-плагин всё равно собирается через `./install.sh`. После этого виджет при первом открытии сам скачивает yt-dlp и включает ежедневное обновление. Пароль root не нужен.
-
-## Установка
+Самый простой способ:
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Zrn59/kde-plasmoid-yt-dlp/main/install.sh)"
 ```
 
-Или из клона: `./install.sh`. В меню есть установка, обновление, починка и удаление.
+Требуется KDE Plasma 6. Права root не нужны. Остальные способы и пакеты компилятора перечислены ниже. Краткий выбор системы: [README.ru.md](../README.ru.md).
 
-Скрипт собирает виджет под локальные Qt и Plasma, ставит отдельный yt-dlp в `~/.local/share/com.zrn59.ytdlp/bin/` и включает ежедневный таймер `com.zrn59.ytdlp-update.timer`. Файл сверяется по SHA-256. Обновление не вызывает `apt` и `yt-dlp -U`.
+## Соответствие файла и системы
 
-Deno скачивается только если в системе нет ни Deno, ни Node. C++-плагин лежит внутри пакета виджета. `QML_IMPORT_PATH` не задаётся.
+| Файл | Система | Архитектура |
+| --- | --- | --- |
+| PPA `ppa:zrn59/kde-plasmoid-yt-dlp` | Ubuntu, выпуски, включённые в PPA | amd64, arm64 |
+| `kde-plasmoid-yt-dlp_2.1.0-1_amd64.deb` | Debian 13 | amd64 |
+| `kde-plasmoid-yt-dlp_2.1.0-1_arm64.deb` | Debian 13 | arm64 |
+| `kde-plasmoid-yt-dlp-2.1.0-1-x86_64.pkg.tar.zst` | Arch Linux | x86_64 |
+| `kde-plasmoid-yt-dlp-2.1.0-1-aarch64.pkg.tar.xz` | Arch Linux | aarch64 |
 
-`~/.local/bin/yt-dlp` не перезаписывается.
+Файл `.deb` собран в Debian 13. Зависимости этого файла на Ubuntu не совпадают. Пакет Arch Linux собран для репозиториев Arch Linux на момент сборки. При более старых версиях библиотек `pacman -U` завершается ошибкой зависимостей.
 
-`./install.sh` один раз перезагружает Plasma и снимает старую подмену `QML_IMPORT_PATH`, если она осталась от прошлой установки этого виджета.
+Определение архитектуры:
 
 ```bash
-./install.sh --skip-restart
-./install.sh --skip-runtime
-./uninstall.sh
+dpkg --print-architecture
+uname -m
 ```
 
-## Зависимости
+`amd64` и `x86_64` — одна архитектура. `arm64` и `aarch64` — одна архитектура.
 
-Для работы: Plasma 6, `ffmpeg`, `curl`. Для cookies YouTube нужен Deno или Node.
+## После установки
 
-| Дистрибутив | Пакеты |
+Добавление на панель: ПКМ по панели → Добавить виджеты → kde-plasmoid-yt-dlp.
+
+При уже добавленном виджете требуется новый вход в сессию. Иначе остаётся ранее загруженный плагин.
+
+Пакет apt или pacman и `./install.sh` одновременно не используются.
+
+## Сборка через install.sh
+
+Права root не требуются. Перед запуском устанавливаются пакеты компилятора.
+
+Debian, Ubuntu:
+
+```bash
+sudo apt install cmake g++ extra-cmake-modules pkg-config \
+  qt6-base-dev qt6-declarative-dev \
+  libkf6i18n-dev libkf6notifications-dev kpackagetool6 \
+  ffmpeg curl git
+```
+
+Fedora:
+
+```bash
+sudo dnf install cmake gcc-c++ extra-cmake-modules \
+  qt6-qtbase-devel qt6-qtdeclarative-devel \
+  kf6-ki18n-devel kf6-knotifications-devel kf6-kpackage-devel \
+  ffmpeg curl git
+```
+
+Arch Linux:
+
+```bash
+sudo pacman -S --needed cmake gcc extra-cmake-modules \
+  qt6-base qt6-declarative ki18n knotifications kpackage \
+  ffmpeg curl git
+```
+
+openSUSE:
+
+```bash
+sudo zypper install cmake gcc-c++ extra-cmake-modules \
+  qt6-base-devel qt6-declarative-devel \
+  kf6-ki18n-devel kf6-knotifications-devel kf6-kpackage-devel \
+  ffmpeg curl git
+```
+
+Запуск:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Zrn59/kde-plasmoid-yt-dlp/main/install.sh)"
+```
+
+Из клона: `./install.sh`.
+
+| Команда | Действие |
 | --- | --- |
-| Debian / Ubuntu | `cmake g++ extra-cmake-modules pkg-config qt6-base-dev qt6-declarative-dev libkf6i18n-dev libkf6notifications-dev kpackagetool6 ffmpeg curl` |
-| Fedora | `cmake gcc-c++ extra-cmake-modules qt6-qtbase-devel qt6-qtdeclarative-devel kf6-ki18n-devel kf6-knotifications-devel kf6-kpackage-devel ffmpeg curl` |
-| Arch | `cmake gcc extra-cmake-modules qt6-base qt6-declarative ki18n knotifications kpackage ffmpeg curl` |
-| openSUSE | `cmake gcc-c++ extra-cmake-modules qt6-base-devel qt6-declarative-devel kf6-ki18n-devel kf6-knotifications-devel kf6-kpackage-devel ffmpeg curl` |
+| `./install.sh` | меню |
+| `./install.sh --install` | сборка и установка |
+| `./install.sh --update` | загрузка исходников и установка |
+| `./install.sh --repair` | повторная сборка без загрузки исходников |
+| `./install.sh --uninstall` | удаление виджета и его yt-dlp |
+| `./install.sh --skip-restart` | без перезапуска Plasma |
+| `./install.sh --skip-runtime` | без загрузки yt-dlp и Deno |
+| `./uninstall.sh` | то же, что `--uninstall` |
 
-Проверка без панели:
+Пути:
+
+- виджет: `~/.local/share/plasma/plasmoids/com.zrn59.ytdlp`
+- yt-dlp: `~/.local/share/com.zrn59.ytdlp/bin/yt-dlp`
+- таймер: `systemctl --user list-timers com.zrn59.ytdlp-update.timer`
+
+Путь `~/.local/bin/yt-dlp` не изменяется. Файл `~/.config/yt-dlp/config` не читается.
+
+## Зависимости при работе
+
+`ffmpeg` используется для склейки видео и звука. `curl` используется для загрузки собственного yt-dlp. Пакет apt или pacman устанавливает обе программы. Для `install.sh` они устанавливаются заранее.
+
+Для YouTube требуется Deno или Node. `install.sh` устанавливает Deno только при отсутствии обеих программ. Пакет apt или pacman Deno не устанавливает:
+
+```bash
+sudo apt install deno
+```
+
+Допустимы cookies из Firefox, Chrome, Chromium, Brave, Edge, Vivaldi и из файла cookies.
+
+Запуск без панели:
 
 ```bash
 plasmoidviewer -a com.zrn59.ytdlp
 ```
-
-## Возможности
-
-- Иконка на панели и число активных загрузок
-- Видео+звук, только видео, только аудио
-- Качество, кодек, контейнер, субтитры, лимит скорости, отрезок по времени
-- Просмотр во время загрузки (`.watch.mkv`)
-- Пауза и продолжение
-- Повтор с докачкой
-- До 5 загрузок сразу
-- Уведомления KDE
-- Кнопка обновления своего yt-dlp
-
-Файл `~/.config/yt-dlp/config` не читается. Свои флаги задаются в **Advanced**. `-o`, `--exec` и подключение чужого конфига отбрасываются.
-
-## Состав
-
-```
-install.sh
-uninstall.sh
-plugin/
-package/
-scripts/yt-dlp-update.sh
-systemd/
-```
-
-## Лицензия
-
-MIT. Текст в [LICENSE](../LICENSE).

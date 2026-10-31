@@ -27,6 +27,15 @@ PlasmaComponents.Page {
     implicitWidth: Kirigami.Units.gridUnit * 26
     implicitHeight: Kirigami.Units.gridUnit * 32
 
+    readonly property real textLimit: Math.max(Kirigami.Units.gridUnit * 16, (scroll.width > 0 ? scroll.width : implicitWidth) - Kirigami.Units.gridUnit * 2)
+    property bool dropReady: false
+    property string queuedUrl: ""
+    onQueuedUrlChanged: {
+        if (queuedUrl.length > 0)
+            insertUrl(queuedUrl)
+    }
+    property bool showHistory: false
+
     property string url: ""
     property bool previewMode: cfg.previewMode
     property int downloadMode: Number(cfg.downloadMode)
@@ -45,11 +54,14 @@ PlasmaComponents.Page {
     property bool showOptions: true
     property bool showAdvanced: cfg.showAdvanced
     property bool useCookies: cfg.useCookies
+    property int cookiesBrowser: Number(cfg.cookiesBrowser) || 0
     property string cookiesFile: cfg.cookiesFile || backend.defaultCookiesFile()
     property string videoFolder: cfg.videoFolder || backend.defaultVideoFolder()
     property string audioFolder: cfg.audioFolder || backend.defaultAudioFolder()
     property string customArgs: cfg.customArgs || ""
+    property bool allowUnsafeArgs: cfg.allowUnsafeArgs === true
     property string downloadSections: cfg.downloadSections || ""
+    property bool sponsorBlock: cfg.sponsorBlock
     property string lastDownloadPath: ""
     property string successMessage: ""
 
@@ -69,12 +81,15 @@ PlasmaComponents.Page {
         cfg.allowPlaylist = allowPlaylist
         cfg.previewMode = previewMode
         cfg.useCookies = useCookies
+        cfg.cookiesBrowser = cookiesBrowser
         cfg.cookiesFile = cookiesFile
         cfg.showAdvanced = showAdvanced
         cfg.videoFolder = videoFolder
         cfg.audioFolder = audioFolder
         cfg.customArgs = customArgs
+        cfg.allowUnsafeArgs = allowUnsafeArgs
         cfg.downloadSections = downloadSections
+        cfg.sponsorBlock = sponsorBlock
     }
 
     function currentFolder() {
@@ -100,9 +115,13 @@ PlasmaComponents.Page {
             allowPlaylist: allowPlaylist,
             previewMode: previewMode,
             useCookies: useCookies,
+            cookiesBrowser: cookiesBrowser,
             cookiesFile: cookiesFile,
             customArgs: customArgs,
+            allowUnsafeArgs: allowUnsafeArgs,
             downloadSections: downloadSections,
+            outputTemplate: cfg.outputTemplate || "",
+            sponsorBlock: sponsorBlock,
         }
     }
 
@@ -144,6 +163,16 @@ PlasmaComponents.Page {
             urlField.text = ""
             saveConfig()
         }
+    }
+
+    function insertUrl(link) {
+        const clean = Options.httpUrlFromText(link)
+        if (!backend.isValidUrl(clean))
+            return false
+        url = clean
+        urlField.text = clean
+        urlField.forceActiveFocus()
+        return true
     }
 
     Component.onCompleted: {
@@ -235,16 +264,48 @@ PlasmaComponents.Page {
                         opacity: 0.65
                         font: Kirigami.Theme.smallFont
                         text: {
+                            const version = Plasmoid.metaData.version || ""
+                            if (backend.checkingPlasmoidUpdate)
+                                return i18n("widget %1: checking…", version)
+                            if (backend.plasmoidUpdateNote.length > 0)
+                                return i18n("widget %1: %2", version, backend.plasmoidUpdateNote)
+                            return i18n("widget %1", version)
+                        }
+                        HoverTip {
+                            label: i18n("Version of this widget")
+                            show: widgetVersionHover.hovered && label.length > 0
+                        }
+                        HoverHandler {
+                            id: widgetVersionHover
+                        }
+                    }
+
+                    PlasmaComponents.Label {
+                        opacity: 0.65
+                        font: Kirigami.Theme.smallFont
+                        text: {
                             if (backend.updatingYtdlp)
                                 return i18n("yt-dlp version: updating…")
                             if (backend.ytdlpVersion.length === 0)
                                 return i18n("yt-dlp version: checking…")
                             return i18n("yt-dlp version: %1", backend.ytdlpVersion)
                         }
-                        PlasmaComponents.ToolTip.text: backend.ytdlpPath.length > 0
-                            ? backend.ytdlpPath
-                            : i18n("yt-dlp is not installed. Click refresh to download it.")
+                        HoverTip {
+                            label: backend.ytdlpPath.length > 0 ? backend.ytdlpPath : i18n("yt-dlp is not installed. Click refresh to download it.")
+                            show: ytdlpVersionHover.hovered && label.length > 0
+                        }
+                        HoverHandler {
+                            id: ytdlpVersionHover
+                        }
                     }
+                }
+
+                PlasmaComponents.ToolButton {
+                    icon.name: "system-software-update"
+                    display: PlasmaComponents.AbstractButton.IconOnly
+                    enabled: !backend.checkingPlasmoidUpdate
+                    onClicked: backend.checkPlasmoidUpdate(Plasmoid.metaData.version || "")
+                    HoverTip { label: i18n("Check for a newer widget version") }
                 }
 
                 PlasmaComponents.ToolButton {
@@ -252,8 +313,24 @@ PlasmaComponents.Page {
                     display: PlasmaComponents.AbstractButton.IconOnly
                     enabled: !backend.updatingYtdlp
                     onClicked: backend.updateYtdlp()
-                    PlasmaComponents.ToolTip.text: i18n("Update yt-dlp")
+                    HoverTip { label: i18n("Download a newer yt-dlp for this widget") }
                 }
+            }
+
+            Kirigami.InlineMessage {
+                Layout.fillWidth: true
+                Layout.leftMargin: Kirigami.Units.gridUnit
+                Layout.rightMargin: Kirigami.Units.gridUnit
+                visible: backend.plasmoidUpdateAvailable && backend.plasmoidReleaseUrl.length > 0
+                type: Kirigami.MessageType.Information
+                text: i18n("Widget %1 is available.", backend.plasmoidLatestVersion)
+                actions: [
+                    Kirigami.Action {
+                        icon.name: "document-open-remote"
+                        text: i18n("Open release")
+                        onTriggered: Qt.openUrlExternally(backend.plasmoidReleaseUrl)
+                    }
+                ]
             }
 
             Kirigami.InlineMessage {
@@ -262,8 +339,16 @@ PlasmaComponents.Page {
                 Layout.rightMargin: Kirigami.Units.gridUnit
                 visible: backend.lastError.length > 0
                 type: Kirigami.MessageType.Error
-                text: backend.lastError
+                text: {
+                    const head = Options.errorHeadline(backend.lastError)
+                    return head.length > 0 ? (head + "\n" + backend.lastError) : backend.lastError
+                }
                 actions: [
+                    Kirigami.Action {
+                        icon.name: "edit-copy"
+                        text: i18n("Copy")
+                        onTriggered: backend.copyText(backend.lastError)
+                    },
                     Kirigami.Action {
                         icon.name: "window-close"
                         text: i18n("Dismiss")
@@ -315,8 +400,11 @@ PlasmaComponents.Page {
                     PlasmaComponents.TextField {
                         id: urlField
                         Layout.fillWidth: true
-                        placeholderText: i18n("Paste link…")
-                        onTextChanged: page.url = text
+                        placeholderText: page.dropReady ? i18n("Drop the link here") : i18n("Paste link…")
+                        onTextChanged: {
+                            page.url = text
+                            backend.clearLinkInfo()
+                        }
                         onAccepted: page.startDownload()
                     }
 
@@ -324,14 +412,23 @@ PlasmaComponents.Page {
                         icon.name: "edit-paste"
                         display: PlasmaComponents.AbstractButton.IconOnly
                         onClicked: {
-                            const clip = backend.pasteFromClipboard()
+                            const raw = backend.pasteFromClipboard()
+                            const clip = Options.httpUrlFromText(raw)
                             if (backend.isValidUrl(clip)) {
                                 urlField.text = clip
-                            } else if (clip.length > 0) {
+                            } else if (raw.length > 0) {
                                 backend.setError(i18n("Clipboard does not contain a valid URL"))
                             }
                         }
-                        PlasmaComponents.ToolTip.text: i18n("Paste")
+                        HoverTip { label: i18n("Paste a link from the clipboard") }
+                    }
+
+                    PlasmaComponents.ToolButton {
+                        icon.name: "document-preview"
+                        text: i18n("Check")
+                        enabled: url.trim().length > 0 && !backend.linkBusy
+                        onClicked: backend.inspectUrl(page.buildOptions())
+                        HoverTip { label: i18n("Show the title and duration") }
                     }
 
                     PlasmaComponents.Button {
@@ -339,7 +436,17 @@ PlasmaComponents.Page {
                         text: i18n("Go")
                         enabled: url.trim().length > 0 && backend.activeCount < 5
                         onClicked: page.startDownload()
+                        HoverTip { label: i18n("Start the download") }
                     }
+                }
+
+                PlasmaComponents.Label {
+                    Layout.fillWidth: true
+                    visible: backend.linkBusy || backend.linkInfo.length > 0
+                    wrapMode: Text.WordWrap
+                    font: Kirigami.Theme.smallFont
+                    color: backend.linkInfoError ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.textColor
+                    text: backend.linkBusy ? i18n("Checking link…") : backend.linkInfo
                 }
 
                     PlasmaComponents.TabBar {
@@ -366,6 +473,7 @@ PlasmaComponents.Page {
                             required property var modelData
                             text: modelData.label
                             icon.name: modelData.icon
+                            HoverTip { label: modelData.tip }
                         }
                     }
                 }
@@ -393,11 +501,13 @@ PlasmaComponents.Page {
                         icon.name: showOptions ? "go-up" : "go-down"
                         display: PlasmaComponents.AbstractButton.IconOnly
                         onClicked: showOptions = !showOptions
+                        HoverTip { label: page.showOptions ? i18n("Hide options") : i18n("Show options") }
                     }
                 }
 
                 GridLayout {
                     Layout.fillWidth: true
+                    Layout.maximumWidth: page.textLimit
                     columns: 2
                     columnSpacing: Kirigami.Units.gridUnit
                     rowSpacing: Kirigami.Units.smallSpacing
@@ -414,6 +524,7 @@ PlasmaComponents.Page {
                         Layout.fillWidth: true
                         model: Options.videoQualities
                         currentValue: videoQuality
+                        tip: i18n("Largest picture size to keep. Best uses the highest one available.")
                         onActivated: (value) => { videoQuality = value; saveConfig() }
                     }
 
@@ -428,6 +539,7 @@ PlasmaComponents.Page {
                         Layout.fillWidth: true
                         model: Options.audioQualities
                         currentValue: audioQuality
+                        tip: i18n("Audio bitrate. With a chosen codec, this is the bitrate after conversion.")
                         onActivated: (value) => { audioQuality = value; saveConfig() }
                     }
 
@@ -442,6 +554,7 @@ PlasmaComponents.Page {
                         Layout.fillWidth: true
                         model: Options.videoContainers
                         currentValue: videoContainer
+                        tip: i18n("Container of the finished file. Watching while it downloads always saves MKV.")
                         onActivated: (value) => { videoContainer = value; saveConfig() }
                     }
 
@@ -456,6 +569,7 @@ PlasmaComponents.Page {
                         Layout.fillWidth: true
                         model: Options.audioCodecs
                         currentValue: audioCodec
+                        tip: i18n("Audio codec. Any keeps the published stream and does not convert it.")
                         onActivated: (value) => { audioCodec = value; saveConfig() }
                     }
 
@@ -484,7 +598,7 @@ PlasmaComponents.Page {
                                     folderDialog.currentFolder = folder
                                 folderDialog.open()
                             }
-                            PlasmaComponents.ToolTip.text: i18n("Browse")
+                            HoverTip { label: i18n("Choose the download folder") }
                         }
                     }
 
@@ -495,16 +609,18 @@ PlasmaComponents.Page {
                         text: i18n("Watch while downloading")
                         checked: previewMode
                         onToggled: { previewMode = checked; saveConfig() }
+                        HoverTip { label: i18n("Build a playable MKV with sound while the download is still running.") }
                     }
 
                     PlasmaComponents.Label {
                         Layout.columnSpan: 2
-                        Layout.leftMargin: Kirigami.Units.gridUnit * 2
+                        Layout.fillWidth: true
+                        Layout.maximumWidth: page.textLimit
                         visible: previewMode && downloadMode !== 2
                         wrapMode: Text.WordWrap
                         opacity: 0.55
                         font: Kirigami.Theme.smallFont
-                        text: i18n("Video and audio download in parallel; a .watch.mkv preview is rebuilt every few seconds. Press ▶ to open in your default player.")
+                        text: i18n("A playable copy with sound appears under the finished filename and is updated as more of the video arrives. Press ▶ to open it. When the download ends, that same file becomes the full video. This mode saves MKV, because a growing MP4 cannot be played.")
                     }
 
                     PlasmaComponents.CheckBox {
@@ -513,13 +629,25 @@ PlasmaComponents.Page {
                         text: i18n("Use cookies (YouTube)")
                         checked: useCookies
                         onToggled: { useCookies = checked; saveConfig() }
+                        HoverTip { label: i18n("Send cookies so YouTube can treat this as a signed-in browser. A browser profile stays fresh; a file goes stale.") }
+                    }
+
+                    OptionCombo {
+                        Layout.columnSpan: 2
+                        Layout.fillWidth: true
+                        Layout.leftMargin: Kirigami.Units.gridUnit * 2
+                        visible: useCookies
+                        model: Options.cookieBrowsers
+                        currentValue: cookiesBrowser
+                        tip: i18n("Where to read the cookies from.")
+                        onActivated: (value) => { cookiesBrowser = value; saveConfig() }
                     }
 
                     RowLayout {
                         Layout.columnSpan: 2
                         Layout.fillWidth: true
                         Layout.leftMargin: Kirigami.Units.gridUnit * 2
-                        visible: useCookies
+                        visible: useCookies && cookiesBrowser === 0
                         spacing: Kirigami.Units.smallSpacing
 
                         PlasmaComponents.Label {
@@ -539,6 +667,7 @@ PlasmaComponents.Page {
                                     saveConfig()
                                 }
                             }
+                            HoverTip { label: i18n("Choose a cookies file") }
                         }
                     }
 
@@ -548,12 +677,17 @@ PlasmaComponents.Page {
                         icon.name: showAdvanced ? "go-up" : "go-down"
                         text: i18n("Advanced")
                         display: PlasmaComponents.AbstractButton.TextBesideIcon
-                        onClicked: showAdvanced = !showAdvanced
+                        onClicked: {
+                            showAdvanced = !showAdvanced
+                            saveConfig()
+                        }
+                        HoverTip { label: i18n("Show extra settings") }
                     }
 
                     GridLayout {
                         Layout.columnSpan: 2
                         Layout.fillWidth: true
+                        Layout.maximumWidth: page.textLimit
                         columns: 2
                         visible: showAdvanced
                         columnSpacing: Kirigami.Units.gridUnit
@@ -568,6 +702,7 @@ PlasmaComponents.Page {
                             Layout.fillWidth: true
                             model: Options.videoCodecs
                             currentValue: videoCodec
+                            tip: i18n("Video codec. MP4 with Any prefers AV1 or H.264, because VP9 breaks the opening seconds in VLC.")
                             onActivated: (v) => { videoCodec = v; saveConfig() }
                         }
 
@@ -580,6 +715,7 @@ PlasmaComponents.Page {
                             Layout.fillWidth: true
                             model: Options.subtitleOptions
                             currentValue: subtitleOption
+                            tip: i18n("Which subtitles to save. Embed also puts them inside the video.")
                             onActivated: (v) => { subtitleOption = v; saveConfig() }
                         }
 
@@ -594,6 +730,7 @@ PlasmaComponents.Page {
                             Layout.fillWidth: true
                             model: Options.subtitleLanguages
                             currentValue: subtitleLanguage
+                            tip: i18n("Subtitle language. Auto uses the language of this system.")
                             onActivated: (v) => { subtitleLanguage = v; saveConfig() }
                         }
 
@@ -608,6 +745,7 @@ PlasmaComponents.Page {
                             Layout.fillWidth: true
                             model: Options.subtitleFormats
                             currentValue: subtitleFormat
+                            tip: i18n("Subtitle file type.")
                             onActivated: (v) => { subtitleFormat = v; saveConfig() }
                         }
 
@@ -620,6 +758,7 @@ PlasmaComponents.Page {
                             Layout.fillWidth: true
                             model: Options.speedLimits
                             currentValue: speedLimit
+                            tip: i18n("Maximum download speed.")
                             onActivated: (v) => { speedLimit = v; saveConfig() }
                         }
 
@@ -629,6 +768,7 @@ PlasmaComponents.Page {
                             text: i18n("Embed metadata")
                             checked: embedMetadata
                             onToggled: { embedMetadata = checked; saveConfig() }
+                            HoverTip { label: i18n("Write the title and other details into the file.") }
                         }
                         PlasmaComponents.CheckBox {
                             Layout.columnSpan: 2
@@ -636,6 +776,7 @@ PlasmaComponents.Page {
                             text: i18n("Embed thumbnail")
                             checked: embedThumbnail
                             onToggled: { embedThumbnail = checked; saveConfig() }
+                            HoverTip { label: i18n("Store the cover image inside the file.") }
                         }
                         PlasmaComponents.CheckBox {
                             Layout.columnSpan: 2
@@ -643,6 +784,15 @@ PlasmaComponents.Page {
                             text: i18n("Download playlist")
                             checked: allowPlaylist
                             onToggled: { allowPlaylist = checked; saveConfig() }
+                            HoverTip { label: i18n("Download every item in a playlist. Off keeps only this link.") }
+                        }
+                        PlasmaComponents.CheckBox {
+                            Layout.columnSpan: 2
+                            Layout.leftMargin: Kirigami.Units.gridUnit * 2
+                            text: i18n("Skip sponsors")
+                            checked: sponsorBlock
+                            onToggled: { sponsorBlock = checked; saveConfig() }
+                            HoverTip { label: i18n("Cut sponsor segments out of the video.") }
                         }
 
                         PlasmaComponents.Label {
@@ -652,15 +802,18 @@ PlasmaComponents.Page {
                         }
                         PlasmaComponents.TextField {
                             Layout.fillWidth: true
+                            hoverEnabled: true
                             placeholderText: i18n("10:00-15:00")
                             text: downloadSections
                             onTextChanged: downloadSections = text
                             onEditingFinished: saveConfig()
+                            HoverTip { label: i18n("Download only this part of the video. A leading * is added for you.") }
                         }
 
                         PlasmaComponents.Label {
                             Layout.columnSpan: 2
-                            Layout.leftMargin: Kirigami.Units.gridUnit * 2
+                            Layout.fillWidth: true
+                            Layout.maximumWidth: page.textLimit
                             wrapMode: Text.WordWrap
                             opacity: 0.55
                             font: Kirigami.Theme.smallFont
@@ -674,19 +827,33 @@ PlasmaComponents.Page {
                         }
                         PlasmaComponents.TextField {
                             Layout.fillWidth: true
+                            hoverEnabled: true
                             placeholderText: i18n("--sponsorblock-remove all")
                             text: customArgs
                             onTextChanged: customArgs = text
                             onEditingFinished: saveConfig()
+                            HoverTip { label: allowUnsafeArgs
+                                ? i18n("Extra yt-dlp flags, including ones that run programs or choose the output path.")
+                                : i18n("Extra yt-dlp flags. Risky ones are ignored until the checkbox below is on.") }
+                        }
+
+                        PlasmaComponents.CheckBox {
+                            Layout.columnSpan: 2
+                            Layout.leftMargin: Kirigami.Units.gridUnit * 2
+                            text: i18n("Allow risky flags")
+                            checked: allowUnsafeArgs
+                            onToggled: { allowUnsafeArgs = checked; saveConfig() }
+                            HoverTip { label: i18n("Pass output path, shell commands, plugins, and a custom downloader through. Off, those flags are dropped.") }
                         }
 
                         PlasmaComponents.Label {
                             Layout.columnSpan: 2
-                            Layout.leftMargin: Kirigami.Units.gridUnit * 2
+                            Layout.fillWidth: true
+                            Layout.maximumWidth: page.textLimit
                             wrapMode: Text.WordWrap
                             opacity: 0.55
                             font: Kirigami.Theme.smallFont
-                            text: i18n("Raw yt-dlp flags. The global yt-dlp config is not used. Dangerous options (-o, --exec, …) are ignored.")
+                            text: i18n("Raw yt-dlp flags. The global yt-dlp config is not used. Risky flags can run another program or write files outside the download folder.")
                         }
                     }
                 }
@@ -711,7 +878,7 @@ PlasmaComponents.Page {
                         icon.name: "process-stop"
                         display: PlasmaComponents.AbstractButton.IconOnly
                         onClicked: backend.cancelAll()
-                        PlasmaComponents.ToolTip.text: i18n("Cancel all")
+                        HoverTip { label: i18n("Cancel all") }
                     }
                 }
 
@@ -745,6 +912,7 @@ PlasmaComponents.Page {
                         onPreview: page.backend.openPreview(downloadId)
                         onOpenFile: page.backend.openFile(previewFile.length > 0 ? previewFile : filePath)
                         onOpenFolder: page.backend.openFolder(filePath.length > 0 ? filePath : (outputDir || previewFile))
+                        onCopyLog: page.backend.copyText(errorLog)
                     }
                 }
             }
@@ -768,6 +936,7 @@ PlasmaComponents.Page {
                         icon.name: "edit-clear"
                         display: PlasmaComponents.AbstractButton.IconOnly
                         onClicked: backend.dismissAllFailed()
+                        HoverTip { label: i18n("Clear failed downloads") }
                     }
                 }
 
@@ -787,6 +956,80 @@ PlasmaComponents.Page {
                         onRetry: backend.retryDownload(downloadId)
                         onDismiss: backend.dismissFailed(downloadId)
                         onOpenFolder: backend.openFolder(modelData.filePath || modelData.outputDir || "")
+                        onCopyLog: backend.copyText(errorLog.length > 0 ? errorLog : status)
+                    }
+                }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: Kirigami.Units.gridUnit
+                Layout.rightMargin: Kirigami.Units.gridUnit
+                Layout.maximumWidth: page.textLimit
+                visible: backend.history.length > 0
+                spacing: Kirigami.Units.smallSpacing
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: page.textLimit
+
+                    PlasmaComponents.ToolButton {
+                        Layout.fillWidth: true
+                        icon.name: page.showHistory ? "go-up" : "go-down"
+                        text: i18n("Recent (%1)", backend.history.length)
+                        display: PlasmaComponents.AbstractButton.TextBesideIcon
+                        onClicked: page.showHistory = !page.showHistory
+                        HoverTip { label: i18n("Show finished downloads") }
+                    }
+
+                    PlasmaComponents.ToolButton {
+                        visible: page.showHistory
+                        icon.name: "edit-clear"
+                        display: PlasmaComponents.AbstractButton.IconOnly
+                        onClicked: {
+                            backend.clearHistory()
+                            page.showHistory = false
+                        }
+                        HoverTip { label: i18n("Clear history") }
+                    }
+                }
+
+                Repeater {
+                    model: page.showHistory ? backend.history : []
+                    delegate: RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        spacing: Kirigami.Units.smallSpacing
+
+                        PlasmaComponents.Label {
+                            Layout.fillWidth: true
+                            text: modelData.title || modelData.url
+                            elide: Text.ElideRight
+                            maximumLineCount: 1
+                        }
+
+                        PlasmaComponents.ToolButton {
+                            icon.name: "document-open"
+                            display: PlasmaComponents.AbstractButton.IconOnly
+                            enabled: (modelData.filePath || "").length > 0
+                            onClicked: backend.openFile(modelData.filePath)
+                            HoverTip { label: i18n("Open file") }
+                        }
+
+                        PlasmaComponents.ToolButton {
+                            icon.name: "folder-open"
+                            display: PlasmaComponents.AbstractButton.IconOnly
+                            enabled: (modelData.filePath || modelData.outputDir || "").length > 0
+                            onClicked: backend.openFolder(modelData.filePath || modelData.outputDir)
+                            HoverTip { label: i18n("Open folder") }
+                        }
+
+                        PlasmaComponents.ToolButton {
+                            icon.name: "window-close"
+                            display: PlasmaComponents.AbstractButton.IconOnly
+                            onClicked: backend.dismissHistory(modelData.id)
+                            HoverTip { label: i18n("Dismiss") }
+                        }
                     }
                 }
             }
@@ -819,6 +1062,15 @@ PlasmaComponents.Page {
             text: i18n("zrn59.me")
             flat: true
             onClicked: Qt.openUrlExternally("https://zrn59.me")
+            HoverTip { label: i18n("Open the site") }
+        }
+
+        PlasmaComponents.ToolButton {
+            icon.name: "folder-git"
+            text: i18n("GitHub")
+            flat: true
+            onClicked: Qt.openUrlExternally("https://github.com/Zrn59/kde-plasmoid-yt-dlp")
+            HoverTip { label: i18n("Open the project page") }
         }
 
         Item { Layout.fillWidth: true }
@@ -828,6 +1080,7 @@ PlasmaComponents.Page {
             text: i18n("☕ Support / Donate")
             flat: true
             onClicked: Qt.openUrlExternally("https://www.donationalerts.com/r/zrn59")
+            HoverTip { label: i18n("Support the project") }
         }
     }
 }

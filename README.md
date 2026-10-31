@@ -17,39 +17,99 @@
 ---
 
 <p align="center">
-  <img src="docs/screenshot.png" alt="yt-dlp widget" width="420">
+  <img src="docs/screenshot-main.png" alt="Widget window" width="420"><br>
+  Widget window
 </p>
 
-Panel widget for KDE Plasma 6. Paste a link, pick video or audio, and it downloads with its own copy of [yt-dlp](https://github.com/yt-dlp/yt-dlp). That copy lives in `~/.local/share/com.zrn59.ytdlp/` and updates itself once a day. System yt-dlp and other widgets are left alone.
+<p align="center">
+  <img src="docs/screenshot-advanced.png" alt="Advanced settings" width="420"><br>
+  Advanced settings
+</p>
 
-Also on the [KDE Store](https://store.kde.org/p/2380466/).
+<p align="center">
+  <img src="docs/screenshot-desktop.png" alt="Widget on the desktop" width="720"><br>
+  Widget on the desktop
+</p>
+
+KDE Plasma 6 panel widget. Video and audio are downloaded with a private copy of [yt-dlp](https://github.com/yt-dlp/yt-dlp) in `~/.local/share/com.zrn59.ytdlp/`. That copy updates once a day. A system yt-dlp is not replaced.
+
+Store page: [KDE Store](https://store.kde.org/p/2380466/).
 
 ## Install
 
-Plasma 6, a C++ compiler, CMake, Qt 6 and KDE Frameworks 6 development packages, plus `ffmpeg` and `curl`. The package list for Debian, Fedora, Arch and openSUSE is in the [docs](docs/en/README.md).
+Simplest way:
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Zrn59/kde-plasmoid-yt-dlp/main/install.sh)"
 ```
 
-The menu lets you install, update, repair, or uninstall. From a clone, `./install.sh` opens the same menu.
+KDE Plasma 6 is required. Root is not required. Menu entries: install, update, repair, uninstall. From a clone the same menu is `./install.sh`.
+
+The other methods depend on the system. The distro package and `install.sh` are not installed together.
+
+Panel: right-click → Add Widgets → kde-plasmoid-yt-dlp. A new login is required when the widget was already on the panel.
+
+| System | Architecture | Method |
+| --- | --- | --- |
+| Ubuntu | amd64, arm64 | PPA |
+| Debian 13 | amd64, arm64 | release `.deb` |
+| Arch Linux | x86_64, aarch64 | release `.pkg.tar.*` |
+| Fedora, openSUSE, other Plasma 6 | amd64, arm64, x86_64, aarch64 | `install.sh` |
+
+The `.deb` is built on Debian 13. Its dependencies do not match Ubuntu. When a Ubuntu release is absent from the PPA, `install.sh` is used.
+
+Architecture is reported by `dpkg --print-architecture` and `uname -m`. The names `amd64` and `x86_64` are the same architecture. The names `arm64` and `aarch64` are the same architecture.
+
+### Ubuntu
 
 ```bash
-git clone https://github.com/Zrn59/kde-plasmoid-yt-dlp.git
-cd kde-plasmoid-yt-dlp
-./install.sh
+sudo add-apt-repository ppa:zrn59/kde-plasmoid-yt-dlp
+sudo apt update
+sudo apt install kde-plasmoid-yt-dlp
 ```
 
-Then right-click the panel → **Add Widgets** → **kde-plasmoid-yt-dlp**.
+Update command: `sudo apt upgrade`. The PPA contains only the Ubuntu releases enabled on Launchpad.
 
-`./install.sh` builds the widget for the Qt and Plasma installed on this machine and reloads Plasma once. The first time the widget opens, it downloads yt-dlp if it is not there yet and enables the daily update timer. No root password.
+### Debian 13, amd64
+
+```bash
+sudo apt install ./kde-plasmoid-yt-dlp_2.1.0-1_amd64.deb
+```
+
+### Debian 13, arm64
+
+```bash
+sudo apt install ./kde-plasmoid-yt-dlp_2.1.0-1_arm64.deb
+```
+
+Debian 12 and earlier do not install this package. The next version is installed from a new file. `apt upgrade` does not find a release file.
+
+### Arch Linux, x86_64
+
+```bash
+sudo pacman -U kde-plasmoid-yt-dlp-2.1.0-1-x86_64.pkg.tar.zst
+```
+
+### Arch Linux, aarch64
+
+```bash
+sudo pacman -U kde-plasmoid-yt-dlp-2.1.0-1-aarch64.pkg.tar.xz
+```
+
+There is no AUR package: registration is temporarily closed 🥲
+
+`pacman -Syu` does not update a package installed from a file. The next version is installed from a new file.
+
+### Build from source
+
+Compiler packages are listed in [docs/en/README.md](docs/en/README.md). Widget directory: `~/.local/share/plasma/plasmoids/`. yt-dlp directory: `~/.local/share/com.zrn59.ytdlp/bin/yt-dlp`. The path `~/.local/bin/yt-dlp` is not changed. Plasma restarts once.
 
 ```bash
 ./install.sh --skip-restart
 ./uninstall.sh
 ```
 
-The KDE Store page is for finding the project. The widget includes a small C++ plugin, so a one-click install from Discover cannot compile it for you. Use `./install.sh`.
+YouTube requires Deno or Node. `install.sh` downloads Deno when neither is present. The apt and pacman packages do not install Deno. `ffmpeg` and `curl` are package dependencies. For `install.sh` those programs are installed first.
 
 ## What it does
 
@@ -61,6 +121,8 @@ The KDE Store page is for finding the project. The widget includes a small C++ p
 - KDE notifications
 - Files are saved under the title, for example `Bad Apple!!.mp4`
 
-Packages for apt and the AUR: [docs/en/packaging.md](docs/en/packaging.md).
+Packages and the PPA: [docs/en/packaging.md](docs/en/packaging.md).
+
+Suggestions: [Discussions](https://github.com/Zrn59/kde-plasmoid-yt-dlp/discussions).
 
 MIT. See [LICENSE](LICENSE).

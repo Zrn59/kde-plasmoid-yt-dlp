@@ -74,8 +74,15 @@ struct DownloadOptions {
     bool resumePartial = false;
     QString cookiesFile;
     bool useCookies = false;
+    // 0 is a cookies file. 1.. are browser names from cookiesBrowserName().
+    int cookiesBrowser = 0;
     QString customArgs;
+    bool allowUnsafeArgs = false;
     QString downloadSections;
+    QString outputTemplate;
+    bool sponsorBlockRemove = false;
+    QString previewWorkDir;
+    QString tempDir;
 };
 
 QString runtimeRoot();
@@ -90,6 +97,23 @@ QString jsRuntimeSpec();
 QString processPath();
 QStringList buildArgs(const DownloadOptions &options, const QString &ffmpegPath);
 QString normalizeDownloadSection(const QString &raw);
-QStringList sanitizeCustomArgs(const QString &raw);
+QStringList sanitizeCustomArgs(const QString &raw, bool allowUnsafe = false);
+QString cookiesBrowserName(int id);
+QString extractHttpUrl(const QString &text);
+bool pathIsInside(const QString &path, const QString &directory);
+QString finishedDownloadPath(const QString &line);
+
+struct ParsedProgress {
+    bool valid = false;
+    double percent = 0;
+    QString speed;
+    QString eta;
+};
+
+ParsedProgress parseProgressLine(const QString &line);
+
+// 1 when left is newer, -1 when right is newer, 0 when equal.
+// A leading "v" and a suffix after "-" are ignored.
+int compareVersions(const QString &left, const QString &right);
 
 } // namespace YtdlpFormats

@@ -5,7 +5,7 @@ set(CMAKE_AUTOMOC ON)
 find_package(ECM REQUIRED NO_MODULE)
 set(CMAKE_MODULE_PATH ${ECM_MODULE_PATH})
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Network Qml Widgets)
 find_package(KF6 REQUIRED COMPONENTS I18n Notifications)
 
 add_library(ytdlpplugin SHARED
@@ -19,6 +19,7 @@ target_link_libraries(ytdlpplugin
     PRIVATE
         Qt6::Core
         Qt6::Gui
+        Qt6::Network
         Qt6::Qml
         Qt6::Widgets
         KF6::I18n

@@ -1,3 +1,9 @@
+kde-plasmoid-yt-dlp (2.1.0-1) unstable; urgency=medium
+
+  * Add distro packages and the widget changes since 2.0.1.
+
+ -- Zrn59 <151060767+Zrn59@users.noreply.github.com>  Sat, 31 Oct 2026 18:10:00 +0500
+
 kde-plasmoid-yt-dlp (2.0.1-1) unstable; urgency=medium
 
   * Package the Plasma 6 widget.

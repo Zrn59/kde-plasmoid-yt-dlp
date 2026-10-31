@@ -5,9 +5,13 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QLocale>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QSet>
 #include <QStandardPaths>
+
+#include <algorithm>
 
 #include <dlfcn.h>
 
@@ -283,39 +287,122 @@ static QString subtitleLang(SubtitleLanguage lang)
         return QStringLiteral("zh");
     case SubtitleLanguage::All:
         return QStringLiteral("all");
-    default:
-        return {};
+    default: {
+        const QString name = QLocale::system().name();
+        const QString lang = name.section(QLatin1Char('_'), 0, 0);
+        if (lang.isEmpty() || lang == QLatin1String("C") || lang == QLatin1String("POSIX")) {
+            return {};
+        }
+        return lang;
+    }
     }
 }
 
-static QString buildVideoAudioFormat(VideoQuality quality, VideoCodec codec)
+static QString videoPick(const QString &kind, VideoQuality quality, const QString &codecFilter)
 {
-    if (quality == VideoQuality::Best) {
-        return QStringLiteral("bestvideo+bestaudio/best");
-    }
-    if (quality == VideoQuality::Worst) {
-        return QStringLiteral("worstvideo+worstaudio/worst");
-    }
+    QString selector = kind;
     const int height = qualityHeight(quality);
-    const QString codecFilter = videoCodecFilter(codec);
-    return QStringLiteral("bestvideo[height<=%1]%2+bestaudio/bestvideo[height<=%1]+bestaudio/best")
-        .arg(height)
-        .arg(codecFilter);
+    if (height >= 0) {
+        selector += QStringLiteral("[height<=%1]").arg(height);
+    }
+    selector += codecFilter;
+    return selector;
+}
+
+static QString singleStreamFallback(VideoQuality quality, bool worst)
+{
+    const int height = qualityHeight(quality);
+    const QString kind = worst ? QStringLiteral("w") : QStringLiteral("b");
+    if (height < 0) {
+        return kind + QStringLiteral("[ext=mp4]/") + kind;
+    }
+    return kind + QStringLiteral("[height<=%1][ext=mp4]/").arg(height) + kind;
+}
+
+static QString buildMp4VideoOnlyFormat(VideoQuality quality, VideoCodec codec)
+{
+    if (codec == VideoCodec::Any) {
+        if (quality == VideoQuality::Best) {
+            return QStringLiteral("bv*[vcodec^=av01]/bv*[vcodec^=avc1]/bv*[ext=mp4]/b");
+        }
+        if (quality == VideoQuality::Worst) {
+            return QStringLiteral("wv*[vcodec^=avc1]/wv*[ext=mp4]/w");
+        }
+        const int height = qualityHeight(quality);
+        return QStringLiteral("bv*[height<=%1][vcodec^=av01]/bv*[height<=%1][vcodec^=avc1]/b[height<=%1][ext=mp4]/b")
+            .arg(height);
+    }
+
+    const bool worst = quality == VideoQuality::Worst;
+    const QString kind = worst ? QStringLiteral("wv*") : QStringLiteral("bv*");
+    const QString video = videoPick(kind, quality, videoCodecFilter(codec));
+    const QString plain = videoPick(kind, quality, {});
+    return video + QLatin1Char('/') + plain + QStringLiteral("[ext=mp4]/") + singleStreamFallback(quality, worst);
+}
+
+static QString buildVideoAudioFormat(VideoQuality quality, VideoCodec codec, bool preview, bool mp4)
+{
+    if (preview) {
+        // Audio first, and WebM video, so a playable file with sound can be
+        // built while the rest of the video is still downloading.
+        if (quality == VideoQuality::Best) {
+            return QStringLiteral("bestaudio+bestvideo[ext=webm]/bestaudio+bestvideo/best");
+        }
+        if (quality == VideoQuality::Worst) {
+            return QStringLiteral("worstaudio+worstvideo[ext=webm]/worstaudio+worstvideo/worst");
+        }
+        const int height = qualityHeight(quality);
+        return QStringLiteral("bestaudio+bestvideo[height<=%1][ext=webm]/bestaudio+bestvideo[height<=%1]/best")
+            .arg(height);
+    }
+    // VP9 inside MP4 makes VLC break the opening seconds. AV1+Opus and H.264+AAC do not.
+    // An explicit codec still wins: the user asked for that codec.
+    if (mp4 && codec == VideoCodec::Any) {
+        if (quality == VideoQuality::Best) {
+            return QStringLiteral("bv*[vcodec^=av01]+ba[acodec^=opus]/bv*[vcodec^=avc1]+ba[ext=m4a]/bv*[vcodec^=avc1]+ba/b[ext=mp4]/b");
+        }
+        if (quality == VideoQuality::Worst) {
+            return QStringLiteral("wv*[vcodec^=avc1]+wa[ext=m4a]/wv*[vcodec^=avc1]+wa/w[ext=mp4]/w");
+        }
+        const int height = qualityHeight(quality);
+        return QStringLiteral("bv*[height<=%1][vcodec^=av01]+ba[acodec^=opus]/bv*[height<=%1][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=%1][vcodec^=avc1]+ba/b[height<=%1][ext=mp4]/b")
+            .arg(height);
+    }
+    if (mp4) {
+        const bool worst = quality == VideoQuality::Worst;
+        const QString kind = worst ? QStringLiteral("wv*") : QStringLiteral("bv*");
+        const QString video = videoPick(kind, quality, videoCodecFilter(codec));
+        const QString audio = codec == VideoCodec::AV1 ? QStringLiteral("ba[acodec^=opus]") : QStringLiteral("ba[ext=m4a]");
+        return video + QLatin1Char('+') + audio + QLatin1Char('/') + video + QStringLiteral("+ba/")
+            + singleStreamFallback(quality, worst);
+    }
+
+    const bool worst = quality == VideoQuality::Worst;
+    const QString videoKind = worst ? QStringLiteral("worstvideo") : QStringLiteral("bestvideo");
+    const QString audioKind = worst ? QStringLiteral("worstaudio") : QStringLiteral("bestaudio");
+    const QString tail = worst ? QStringLiteral("worst") : QStringLiteral("best");
+    const QString filter = videoCodecFilter(codec);
+    const QString plain = videoPick(videoKind, quality, {});
+    if (filter.isEmpty()) {
+        return plain + QLatin1Char('+') + audioKind + QLatin1Char('/') + tail;
+    }
+    const QString video = videoPick(videoKind, quality, filter);
+    return video + QLatin1Char('+') + audioKind + QLatin1Char('/') + plain + QLatin1Char('+') + audioKind + QLatin1Char('/') + tail;
 }
 
 static QString buildVideoOnlyFormat(VideoQuality quality, VideoCodec codec)
 {
-    if (quality == VideoQuality::Best) {
-        return QStringLiteral("bestvideo");
+    const bool worst = quality == VideoQuality::Worst;
+    const QString kind = worst ? QStringLiteral("worstvideo") : QStringLiteral("bestvideo");
+    const QString filter = videoCodecFilter(codec);
+    if (filter.isEmpty() && (quality == VideoQuality::Best || quality == VideoQuality::Worst)) {
+        return kind;
     }
-    if (quality == VideoQuality::Worst) {
-        return QStringLiteral("worstvideo");
+    const QString plain = videoPick(kind, quality, {});
+    if (filter.isEmpty()) {
+        return plain + QLatin1Char('/') + plain + QLatin1Char('/') + kind;
     }
-    const int height = qualityHeight(quality);
-    const QString codecFilter = videoCodecFilter(codec);
-    return QStringLiteral("bestvideo[height<=%1]%2/bestvideo[height<=%1]/bestvideo")
-        .arg(height)
-        .arg(codecFilter);
+    return videoPick(kind, quality, filter) + QLatin1Char('/') + plain + QLatin1Char('/') + kind;
 }
 
 static QString buildAudioFormat(AudioQuality quality)
@@ -368,24 +455,46 @@ static void addSubtitleArgs(QStringList &args, const DownloadOptions &options)
     }
 
     const QString lang = subtitleLang(options.subtitleLanguage);
-    if (!lang.isEmpty() && lang != QStringLiteral("all")) {
+    if (!lang.isEmpty()) {
         args << QStringLiteral("--sub-langs") << lang;
     }
 }
 
-static qint64 speedLimitBytes(SpeedLimit limit)
+static QString speedLimitRate(SpeedLimit limit)
 {
     switch (limit) {
     case SpeedLimit::Slow1M:
-        return 1'000'000;
+        return QStringLiteral("1M");
     case SpeedLimit::Medium5M:
-        return 5'000'000;
+        return QStringLiteral("5M");
     case SpeedLimit::Fast10M:
-        return 10'000'000;
+        return QStringLiteral("10M");
     case SpeedLimit::Custom50M:
-        return 50'000'000;
+        return QStringLiteral("50M");
     default:
-        return 0;
+        return {};
+    }
+}
+
+static QString audioQualityValue(AudioQuality quality)
+{
+    switch (quality) {
+    case AudioQuality::High320:
+        return QStringLiteral("320K");
+    case AudioQuality::High256:
+        return QStringLiteral("256K");
+    case AudioQuality::Medium192:
+        return QStringLiteral("192K");
+    case AudioQuality::Medium128:
+        return QStringLiteral("128K");
+    case AudioQuality::Low96:
+        return QStringLiteral("96K");
+    case AudioQuality::Low64:
+        return QStringLiteral("64K");
+    case AudioQuality::Worst:
+        return QStringLiteral("10");
+    default:
+        return QStringLiteral("0");
     }
 }
 
@@ -402,7 +511,7 @@ QString normalizeDownloadSection(const QString &raw)
     return section;
 }
 
-QStringList sanitizeCustomArgs(const QString &raw)
+QStringList sanitizeCustomArgs(const QString &raw, bool allowUnsafe)
 {
     const QString trimmed = raw.trimmed();
     if (trimmed.isEmpty()) {
@@ -410,6 +519,9 @@ QStringList sanitizeCustomArgs(const QString &raw)
     }
 
     const QStringList parts = QProcess::splitCommand(trimmed);
+    if (allowUnsafe) {
+        return parts;
+    }
     static const QSet<QString> blocked = {
         QStringLiteral("-o"),
         QStringLiteral("--output"),
@@ -422,6 +534,14 @@ QStringList sanitizeCustomArgs(const QString &raw)
         QStringLiteral("--load-info-json"),
         QStringLiteral("--write-pages"),
         QStringLiteral("--print-to-file"),
+        QStringLiteral("--netrc-cmd"),
+        QStringLiteral("--plugin-dirs"),
+        QStringLiteral("--alias"),
+        QStringLiteral("--downloader"),
+        QStringLiteral("--external-downloader"),
+        QStringLiteral("--downloader-args"),
+        QStringLiteral("--external-downloader-args"),
+        QStringLiteral("--ffmpeg-location"),
     };
 
     QStringList safe;
@@ -440,6 +560,25 @@ QStringList sanitizeCustomArgs(const QString &raw)
     return safe;
 }
 
+QString outputBaseName(const QString &requested)
+{
+    QString name = requested.trimmed();
+    name.replace(QLatin1Char('\n'), QString());
+    name.replace(QLatin1Char('\r'), QString());
+    if (name.contains(QLatin1Char('/')) || name.contains(QLatin1Char('\\')) || name.contains(QStringLiteral(".."))) {
+        name.clear();
+    }
+    if (name.endsWith(QStringLiteral(".%(ext)s"))) {
+        name.chop(static_cast<int>(QStringLiteral(".%(ext)s").size()));
+    }
+    name.replace(QStringLiteral("%(ext)s"), QString());
+    name = name.trimmed();
+    if (name.isEmpty()) {
+        name = QStringLiteral("%(title).200B");
+    }
+    return name;
+}
+
 QStringList buildArgs(const DownloadOptions &options, const QString &ffmpegPath)
 {
     QStringList args;
@@ -453,13 +592,27 @@ QStringList buildArgs(const DownloadOptions &options, const QString &ffmpegPath)
     }
 
     args << QStringLiteral("--no-mtime") << QStringLiteral("--newline") << QStringLiteral("--progress");
+    // Stable machine-readable progress. yt-dlp asks callers not to scrape the default bar.
+    args << QStringLiteral("--progress-template")
+         << QStringLiteral("download:@@%(progress._percent_str)s@@%(progress._speed_str)s@@%(progress._eta_str)s");
+    args << QStringLiteral("--progress-delta") << QStringLiteral("0.2");
 
     if (options.resumePartial) {
         args << QStringLiteral("-c");
     }
 
-    if (options.previewMode) {
-        // Streams write directly to disk (no .part) so ffmpeg can read growing files
+    if (!options.outputDir.isEmpty()) {
+        QDir().mkpath(options.outputDir);
+        args << QStringLiteral("-P") << (QStringLiteral("home:") + options.outputDir);
+    }
+    const QString scratchDir = !options.tempDir.isEmpty() ? options.tempDir : options.previewWorkDir;
+    if (!scratchDir.isEmpty()) {
+        QDir().mkpath(scratchDir);
+        // Fragments and thumbnail files stay out of the download folder.
+        // An absolute -o would make this ignored.
+        args << QStringLiteral("-P") << (QStringLiteral("temp:") + scratchDir);
+    }
+    if (options.previewMode && !scratchDir.isEmpty()) {
         args << QStringLiteral("--no-part");
     }
 
@@ -472,17 +625,19 @@ QStringList buildArgs(const DownloadOptions &options, const QString &ffmpegPath)
         args << QStringLiteral("--js-runtimes") << jsRuntime;
     }
 
-    if (options.useCookies && !options.cookiesFile.isEmpty()) {
-        if (QFile::exists(options.cookiesFile)) {
+    if (options.useCookies) {
+        const QString browser = cookiesBrowserName(options.cookiesBrowser);
+        if (!browser.isEmpty()) {
+            args << QStringLiteral("--cookies-from-browser") << browser;
+        } else if (!options.cookiesFile.isEmpty() && QFile::exists(options.cookiesFile)) {
             args << QStringLiteral("--cookies") << options.cookiesFile;
         }
     }
 
-    // One absolute template. "audio:" / "video:" are not -o types, so yt-dlp
-    // would save them as a folder named "audio:" inside the download directory.
-    const QString baseName = QStringLiteral("%(title).200B");
+    // Relative template. An absolute -o disables --paths, and the pieces
+    // then appear in the download folder until yt-dlp deletes them.
     args << QStringLiteral("-o")
-         << QDir(options.outputDir).filePath(baseName + QStringLiteral(".%(ext)s"));
+         << (outputBaseName(options.outputTemplate) + QStringLiteral(".%(ext)s"));
 
     if (!options.resumePartial) {
         args << QStringLiteral("--no-overwrites");
@@ -496,21 +651,30 @@ QStringList buildArgs(const DownloadOptions &options, const QString &ffmpegPath)
 
     switch (options.mode) {
     case DownloadMode::VideoWithAudio:
-        args << QStringLiteral("-f") << buildVideoAudioFormat(options.videoQuality, options.videoCodec);
+        args << QStringLiteral("-f")
+             << buildVideoAudioFormat(options.videoQuality, options.videoCodec, options.previewMode,
+                                      !options.previewMode && effectiveContainer == VideoContainer::MP4);
         args << QStringLiteral("--merge-output-format") << containerExt(effectiveContainer);
         break;
     case DownloadMode::VideoOnly:
-        args << QStringLiteral("-f") << buildVideoOnlyFormat(options.videoQuality, options.videoCodec);
+        if (!options.previewMode && effectiveContainer == VideoContainer::MP4) {
+            args << QStringLiteral("-f") << buildMp4VideoOnlyFormat(options.videoQuality, options.videoCodec);
+        } else {
+            args << QStringLiteral("-f") << buildVideoOnlyFormat(options.videoQuality, options.videoCodec);
+        }
         args << QStringLiteral("--remux-video") << containerExt(effectiveContainer);
         break;
     case DownloadMode::AudioOnly:
-        args << QStringLiteral("-f") << buildAudioFormat(options.audioQuality);
+        if (options.audioCodec == AudioCodec::Any) {
+            args << QStringLiteral("-f") << buildAudioFormat(options.audioQuality);
+        } else {
+            // Re-encoding sets the bitrate. Filtering the source by abr would throw that away.
+            args << QStringLiteral("-f") << QStringLiteral("bestaudio/best");
+        }
         args << QStringLiteral("-x");
         if (options.audioCodec != AudioCodec::Any) {
             args << QStringLiteral("--audio-format") << audioCodecExt(options.audioCodec);
-            if (options.audioCodec == AudioCodec::MP3) {
-                args << QStringLiteral("--audio-quality") << QStringLiteral("0");
-            }
+            args << QStringLiteral("--audio-quality") << audioQualityValue(options.audioQuality);
         }
         break;
     }
@@ -522,11 +686,19 @@ QStringList buildArgs(const DownloadOptions &options, const QString &ffmpegPath)
     }
     if (options.embedThumbnail && options.mode != DownloadMode::VideoOnly) {
         args << QStringLiteral("--embed-thumbnail");
+        args << QStringLiteral("--convert-thumbnails") << QStringLiteral("jpg");
+    }
+    if (options.sponsorBlockRemove) {
+        args << QStringLiteral("--sponsorblock-remove") << QStringLiteral("all");
     }
 
-    const qint64 limit = speedLimitBytes(options.speedLimit);
-    if (limit > 0) {
-        args << QStringLiteral("--limit-rate") << QString::number(limit / 1000) + QStringLiteral("K");
+    if (options.mode != DownloadMode::AudioOnly) {
+        args << QStringLiteral("--ppa") << QStringLiteral("Merger+ffmpeg:-avoid_negative_ts make_zero");
+    }
+
+    const QString limit = speedLimitRate(options.speedLimit);
+    if (!limit.isEmpty()) {
+        args << QStringLiteral("--limit-rate") << limit;
     }
 
     const QString section = normalizeDownloadSection(options.downloadSections);
@@ -539,10 +711,151 @@ QStringList buildArgs(const DownloadOptions &options, const QString &ffmpegPath)
     args << QStringLiteral("--retries") << QStringLiteral("10");
     args << QStringLiteral("--fragment-retries") << QStringLiteral("10");
 
-    args << sanitizeCustomArgs(options.customArgs);
+    args << sanitizeCustomArgs(options.customArgs, options.allowUnsafeArgs);
     args << options.url;
 
     return args;
+}
+
+QString cookiesBrowserName(int id)
+{
+    switch (id) {
+    case 1:
+        return QStringLiteral("firefox");
+    case 2:
+        return QStringLiteral("chrome");
+    case 3:
+        return QStringLiteral("chromium");
+    case 4:
+        return QStringLiteral("brave");
+    case 5:
+        return QStringLiteral("edge");
+    case 6:
+        return QStringLiteral("vivaldi");
+    default:
+        return {};
+    }
+}
+
+QString extractHttpUrl(const QString &text)
+{
+    static const QRegularExpression urlRe(QStringLiteral(R"(https?://[^\s<>"']+)"));
+    const QRegularExpressionMatch match = urlRe.match(text);
+    if (!match.hasMatch()) {
+        return {};
+    }
+    QString url = match.captured(0);
+    while (!url.isEmpty()) {
+        const QChar tail = url.back();
+        if (tail != QLatin1Char(')') && tail != QLatin1Char(',') && tail != QLatin1Char('.')
+            && tail != QLatin1Char('>') && tail != QLatin1Char(']') && tail != QLatin1Char(';')) {
+            break;
+        }
+        url.chop(1);
+    }
+    const int scheme = url.indexOf(QStringLiteral("://"));
+    if (scheme < 0 || scheme + 3 >= url.size()) {
+        return {};
+    }
+    return url;
+}
+
+bool pathIsInside(const QString &path, const QString &directory)
+{
+    if (path.isEmpty() || directory.isEmpty()) {
+        return false;
+    }
+    const QString root = QDir::cleanPath(QDir(directory).absolutePath());
+    const QString absolute = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    return absolute == root || absolute.startsWith(root + QLatin1Char('/'));
+}
+
+QString finishedDownloadPath(const QString &line)
+{
+    const QString prefix = QStringLiteral("[download] ");
+    const QString marker = QStringLiteral(" has already been downloaded");
+    if (!line.startsWith(prefix)) {
+        return {};
+    }
+    const int markerAt = line.indexOf(marker);
+    if (markerAt <= prefix.size()) {
+        return {};
+    }
+    return line.mid(prefix.size(), markerAt - prefix.size()).trimmed();
+}
+
+ParsedProgress parseProgressLine(const QString &line)
+{
+    ParsedProgress parsed;
+    if (!line.startsWith(QStringLiteral("@@"))) {
+        return parsed;
+    }
+    const QStringList parts = line.split(QStringLiteral("@@"));
+    if (parts.size() < 4) {
+        return parsed;
+    }
+    QString percent = parts.at(1).trimmed();
+    if (percent.endsWith(QLatin1Char('%'))) {
+        percent.chop(1);
+    }
+    bool ok = false;
+    const double value = percent.trimmed().toDouble(&ok);
+    if (!ok) {
+        return parsed;
+    }
+
+    const auto keepMetric = [](const QString &text) {
+        const QString trimmed = text.trimmed();
+        if (trimmed.isEmpty() || trimmed.compare(QStringLiteral("NA"), Qt::CaseInsensitive) == 0
+            || trimmed.contains(QStringLiteral("Unknown"), Qt::CaseInsensitive)) {
+            return QString();
+        }
+        return trimmed;
+    };
+
+    parsed.valid = true;
+    parsed.percent = value;
+    parsed.speed = keepMetric(parts.at(2));
+    parsed.eta = keepMetric(parts.at(3));
+    return parsed;
+}
+
+static QList<int> versionNumbers(QString text)
+{
+    text = text.trimmed();
+    if (text.startsWith(QLatin1Char('v'), Qt::CaseInsensitive)) {
+        text = text.mid(1);
+    }
+    const int suffix = text.indexOf(QLatin1Char('-'));
+    if (suffix >= 0) {
+        text = text.left(suffix);
+    }
+    QList<int> numbers;
+    const QStringList parts = text.split(QLatin1Char('.'), Qt::SkipEmptyParts);
+    for (const QString &part : parts) {
+        bool ok = false;
+        const int value = part.toInt(&ok);
+        if (!ok) {
+            break;
+        }
+        numbers.append(value);
+    }
+    return numbers;
+}
+
+int compareVersions(const QString &left, const QString &right)
+{
+    const QList<int> a = versionNumbers(left);
+    const QList<int> b = versionNumbers(right);
+    const int count = std::max(a.size(), b.size());
+    for (int i = 0; i < count; ++i) {
+        const int av = i < a.size() ? a.at(i) : 0;
+        const int bv = i < b.size() ? b.at(i) : 0;
+        if (av != bv) {
+            return av > bv ? 1 : -1;
+        }
+    }
+    return 0;
 }
 
 } // namespace YtdlpFormats
