@@ -1,4 +1,4 @@
-kde-plasmoid-yt-dlp (2.1.0-1) unstable; urgency=medium
+kde-plasmoid-yt-dlp (2.1.0-1) resolute; urgency=medium
 
   * Add distro packages and the widget changes since 2.0.1.
 
